@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agy-pool"
+version = "1.0.0"
+description = "Multi-account rotation, quota failover, and unified conversation management for Google Antigravity CLI (agy)"
+readme = "README.md"
+authors = [
+    { name = "mr-ceo7" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["antigravity", "cli", "ai", "gemini", "quota-rotation", "multi-account", "agy"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Utilities"
+]
+
+[project.scripts]
+agy-pool = "agy_pool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agy_pool*"]
