@@ -15,6 +15,10 @@ else
     echo "agy-pool binary not found at ${TARGET_BIN}"
 fi
 
+rm -f "${HOME}/.local/bin/claude-pool"
+rm -f "${HOME}/.local/bin/copilot-pool"
+echo "✓ Removed pool aliases."
+
 echo "Note: Account credentials and history in ~/.gemini_accounts were preserved."
 echo "If you wish to delete account data as well, run:"
 echo "  rm -rf ~/.gemini_accounts"

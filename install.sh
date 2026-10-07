@@ -40,7 +40,12 @@ fi
 
 chmod +x "${TARGET_BIN}"
 
+# Create convenience symlinks for other CLI pools
+ln -sf "${TARGET_BIN}" "${TARGET_DIR}/claude-pool"
+ln -sf "${TARGET_BIN}" "${TARGET_DIR}/copilot-pool"
+
 echo "✓ agy-pool successfully installed to ${TARGET_BIN}"
+echo "✓ Created convenience aliases: claude-pool, copilot-pool"
 
 # Check PATH
 case ":$PATH:" in

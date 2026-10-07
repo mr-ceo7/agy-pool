@@ -197,32 +197,48 @@ class AccountPool:
                         break
                 self._save_data(data)
 
-    def add_account_from_dir(self, account_id: str, source_gemini_dir: str, email: str = "") -> dict:
+    def add_account_from_dir(self, account_id: str, source_dir: str, tool_type: str = "agy", email: str = "") -> dict:
         clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", account_id).strip("_")
         account_home = os.path.join(self.accounts_dir, clean_id)
-        target_gemini = os.path.join(account_home, ".gemini", "antigravity-cli")
-        os.makedirs(target_gemini, exist_ok=True)
+        os.makedirs(account_home, exist_ok=True)
 
-        for fname in ["antigravity-oauth-token", "settings.json", "installation_id", "antigravity_state.pbtxt"]:
-            src = os.path.join(source_gemini_dir, fname)
-            if os.path.isfile(src):
-                dst = os.path.join(target_gemini, fname)
-                shutil.copy2(src, dst)
+        if tool_type == "agy":
+            target_gemini = os.path.join(account_home, ".gemini", "antigravity-cli")
+            os.makedirs(target_gemini, exist_ok=True)
+            for fname in ["antigravity-oauth-token", "settings.json", "installation_id", "antigravity_state.pbtxt"]:
+                src = os.path.join(source_dir, fname)
+                if os.path.isfile(src):
+                    dst = os.path.join(target_gemini, fname)
+                    shutil.copy2(src, dst)
 
-        if not email:
-            tok_path = os.path.join(target_gemini, "antigravity-oauth-token")
-            if os.path.isfile(tok_path):
-                try:
-                    with open(tok_path, "r", encoding="utf-8") as f:
-                        tok_data = json.load(f)
-                        id_tok = tok_data.get("id_token")
-                        if id_tok and id_tok.count(".") == 2:
-                            payload = id_tok.split(".")[1]
-                            payload += "=" * (-len(payload) % 4)
-                            claims = json.loads(base64.b64decode(payload).decode("utf-8", errors="ignore"))
-                            email = claims.get("email", "")
-                except Exception:
-                    pass
+            if not email:
+                tok_path = os.path.join(target_gemini, "antigravity-oauth-token")
+                if os.path.isfile(tok_path):
+                    try:
+                        with open(tok_path, "r", encoding="utf-8") as f:
+                            tok_data = json.load(f)
+                            id_tok = tok_data.get("id_token")
+                            if id_tok and id_tok.count(".") == 2:
+                                payload = id_tok.split(".")[1]
+                                payload += "=" * (-len(payload) % 4)
+                                claims = json.loads(base64.b64decode(payload).decode("utf-8", errors="ignore"))
+                                email = claims.get("email", "")
+                    except Exception:
+                        pass
+        elif tool_type == "claude":
+            for fname in [".credentials.json", ".claude.json", "settings.json"]:
+                src = os.path.join(source_dir, fname)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(account_home, fname))
+            if not email:
+                email = f"{clean_id}@claude"
+        elif tool_type == "copilot":
+            for fname in ["hosts.yml", "config.json"]:
+                src = os.path.join(source_dir, fname)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(account_home, fname))
+            if not email:
+                email = f"{clean_id}@copilot"
 
         with self.lock:
             with self._file_lock():
@@ -271,21 +287,98 @@ class AccountPool:
 # Quota Error Detection
 # ---------------------------------------------------------------------------
 
-def is_quota_error(text: str) -> bool:
+def is_quota_error(text: str, tool_id: str = "agy") -> bool:
     if not text:
         return False
-    patterns = [
-        r"429",
-        r"RESOURCE_EXHAUSTED",
-        r"quota.*exceeded",
-        r"rate.*limit",
-        r"exhausted.*quota",
-        r"too many requests",
-        r"resource has been exhausted",
-        r"exceeded your current quota"
-    ]
     low = text.lower()
+    if tool_id == "claude":
+        patterns = [
+            r"429",
+            r"rate_limit",
+            r"usage_limit_reached",
+            r"weekly limit",
+            r"5-hour limit",
+            r"limit.*resets",
+            r"out_of_credits",
+            r"overloaded_error",
+        ]
+    else:
+        patterns = [
+            r"429",
+            r"resource_exhausted",
+            r"quota.*exceeded",
+            r"rate.*limit",
+            r"exhausted.*quota",
+            r"too many requests",
+            r"resource has been exhausted",
+            r"exceeded your current quota",
+        ]
     return any(re.search(p, low) for p in patterns)
+
+def ensure_claude_symlinks(account_home: str):
+    """
+    Auto-links shared projects, session histories, and plugins from ~/.claude
+    into isolated Claude account directories so all sessions resume transparently.
+    """
+    real_claude = os.path.expanduser("~/.claude")
+    if not account_home or os.path.realpath(account_home) == os.path.realpath(real_claude):
+        return
+
+    os.makedirs(account_home, exist_ok=True)
+
+    # 1. Shared projects
+    real_proj = os.path.join(real_claude, "projects")
+    acc_proj = os.path.join(account_home, "projects")
+    if os.path.isdir(real_proj):
+        os.makedirs(acc_proj, exist_ok=True)
+        for proj in os.listdir(real_proj):
+            src = os.path.join(real_proj, proj)
+            dst = os.path.join(acc_proj, proj)
+            if not os.path.exists(dst) and not os.path.islink(dst):
+                try:
+                    os.symlink(src, dst)
+                except Exception:
+                    pass
+
+    # 2. Shared file history
+    real_fh = os.path.join(real_claude, "file-history")
+    acc_fh = os.path.join(account_home, "file-history")
+    if os.path.isdir(real_fh):
+        os.makedirs(acc_fh, exist_ok=True)
+        for fh in os.listdir(real_fh):
+            src = os.path.join(real_fh, fh)
+            dst = os.path.join(acc_fh, fh)
+            if not os.path.exists(dst) and not os.path.islink(dst):
+                try:
+                    os.symlink(src, dst)
+                except Exception:
+                    pass
+
+    # 3. Shared plugins, skills, sessions
+    for item in ["plugins", "skills", "session-env", "sessions", "shell-snapshots"]:
+        src = os.path.join(real_claude, item)
+        dst = os.path.join(account_home, item)
+        if os.path.exists(src) and not os.path.exists(dst) and not os.path.islink(dst):
+            try:
+                os.symlink(src, dst)
+            except Exception:
+                pass
+
+def auto_import_claude_accounts(pool: AccountPool):
+    """Auto-imports ~/.claude as primary and ~/.claude2 as secondary if pool is empty."""
+    if pool.list_accounts():
+        return
+
+    primary_dir = os.path.expanduser("~/.claude")
+    secondary_dir = os.path.expanduser("~/.claude2")
+
+    if os.path.isdir(primary_dir):
+        pool.add_account_from_dir("primary", primary_dir, tool_type="claude", email="primary-account")
+        print("[claude-pool] Auto-imported existing ~/.claude as 'primary'.", file=sys.stderr)
+
+    if os.path.isdir(secondary_dir):
+        pool.add_account_from_dir("claude2", secondary_dir, tool_type="claude", email="claude2-account")
+        print("[claude-pool] Auto-imported existing ~/.claude2 as 'claude2'.", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Self-Healing Symlinks & Shared Conversation Management
@@ -345,19 +438,20 @@ def ensure_account_symlinks(account_home: str):
 # Subcommands: Account Management
 # ---------------------------------------------------------------------------
 
-def cmd_status(pool: AccountPool, args: List[str]):
+def cmd_status(pool: AccountPool, args: List[str], tool_name: str = "AGY"):
     accounts = pool.list_accounts()
     active = pool.get_active_account()
     active_id = active.get("id") if active else None
 
     print("\n" + "=" * 68)
-    print("  AGY ACCOUNT ROTATION POOL")
+    print(f"  {tool_name.upper()} ACCOUNT ROTATION POOL")
     print("=" * 68)
 
     if not accounts:
         print("  No accounts registered yet.")
-        print("  Import current: agy-pool import <name>")
-        print("  Add new:        agy-pool add <name>")
+        prefix = f"agy-pool {tool_name.lower()}" if tool_name.upper() != "AGY" else "agy-pool"
+        print(f"  Import current: {prefix} import [name]")
+        print(f"  Add new:        {prefix} add <name>")
         print("=" * 68 + "\n")
         return
 
@@ -484,7 +578,7 @@ def cmd_add(pool: AccountPool, args: List[str]):
     print(f"  Email: {record.get('email')}")
     print(f"  Isolated Home: {record['home_dir']}")
 
-def cmd_test(pool: AccountPool, args: List[str]):
+def cmd_test(pool: AccountPool, args: List[str], tool_bin: str = "agy", tool_id: str = "agy"):
     target_name = args[0] if args else None
     accounts = pool.list_accounts()
 
@@ -498,22 +592,28 @@ def cmd_test(pool: AccountPool, args: List[str]):
         print("No accounts to test.", file=sys.stderr)
         sys.exit(1)
 
-    print("\n--- Testing Accounts in Pool ---")
+    print(f"\n--- Testing Accounts in Pool ({tool_id.upper()}) ---")
     for acc in accounts:
         acc_id = acc["id"]
         acc_home = acc["home_dir"]
-        ensure_account_symlinks(acc_home)
-        print(f"\nTesting '{acc_id}' ({acc.get('email', 'N/A')})...")
-
         env = os.environ.copy()
-        env["HOME"] = acc_home
-        env["DBUS_SESSION_BUS_ADDRESS"] = "disabled"
-        env.pop("SSH_CONNECTION", None)
-        env.pop("SSH_CLIENT", None)
+        if tool_id == "claude":
+            ensure_claude_symlinks(acc_home)
+            env["CLAUDE_CONFIG_DIR"] = acc_home
+        elif tool_id == "copilot":
+            env["XDG_CONFIG_HOME"] = acc_home
+        else:
+            ensure_account_symlinks(acc_home)
+            env["HOME"] = acc_home
+            env["DBUS_SESSION_BUS_ADDRESS"] = "disabled"
+            env.pop("SSH_CONNECTION", None)
+            env.pop("SSH_CLIENT", None)
+
+        print(f"\nTesting '{acc_id}' ({acc.get('email', 'N/A')})...")
 
         start = time.time()
         res = subprocess.run(
-            ["agy", "-p", "Respond with PONG"],
+            [tool_bin, "-p", "Respond with PONG"],
             env=env,
             capture_output=True,
             text=True,
@@ -627,32 +727,96 @@ def cmd_update(args: List[str]):
         sys.exit(1)
 
 # ---------------------------------------------------------------------------
+def cmd_add_claude(pool: AccountPool, args: List[str]):
+    if not args:
+        print("Usage: agy-pool claude add <account_name>", file=sys.stderr)
+        sys.exit(1)
+    acc_name = args[0]
+    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", acc_name).strip("_")
+    account_home = os.path.join(pool.accounts_dir, clean_id)
+    os.makedirs(account_home, exist_ok=True)
+    ensure_claude_symlinks(account_home)
+
+    env = os.environ.copy()
+    env["CLAUDE_CONFIG_DIR"] = account_home
+    print(f"\n[claude-pool] Launching isolated Claude authentication for '{clean_id}'...")
+    print("Authenticate in the terminal/browser session.")
+    subprocess.run(["claude"], env=env)
+    record = pool.add_account_from_dir(clean_id, account_home, tool_type="claude", email=f"{clean_id}@claude")
+    print(f"\n✓ Registered Claude account '{clean_id}' into pool.")
+
+def cmd_import_claude(pool: AccountPool, args: List[str]):
+    source = args[0] if args else "primary"
+    source_dir = os.path.expanduser(f"~/.{source}") if not os.path.isabs(source) else source
+    if not os.path.isdir(source_dir):
+        print(f"Directory not found: {source_dir}", file=sys.stderr)
+        sys.exit(1)
+    clean_id = os.path.basename(source_dir).lstrip(".")
+    record = pool.add_account_from_dir(clean_id, source_dir, tool_type="claude", email=f"{clean_id}@claude")
+    ensure_claude_symlinks(record["home_dir"])
+    print(f"✓ Imported Claude account '{clean_id}' from {source_dir}")
+
+# ---------------------------------------------------------------------------
 # Main Execution Entry Point
 # ---------------------------------------------------------------------------
 
 def main():
-    pool = AccountPool()
+    invoked_name = os.path.basename(sys.argv[0]).lower()
+    tool_id = "agy"
+    if "claude" in invoked_name:
+        tool_id = "claude"
+    elif "copilot" in invoked_name:
+        tool_id = "copilot"
+    elif len(sys.argv) > 1 and sys.argv[1].lower() in ("claude", "copilot", "gemini", "agy"):
+        tool_id = sys.argv[1].lower()
+        if tool_id == "gemini":
+            tool_id = "agy"
+        sys.argv.pop(1)
+
+    if tool_id == "claude":
+        pool_base = os.path.expanduser("~/.claude_accounts")
+        tool_name = "Claude"
+        default_bin = "claude"
+    elif tool_id == "copilot":
+        pool_base = os.path.expanduser("~/.copilot_accounts")
+        tool_name = "Copilot"
+        default_bin = "copilot"
+    else:
+        pool_base = DEFAULT_ACCOUNTS_DIR
+        tool_name = "AGY"
+        default_bin = "agy"
+
+    pool = AccountPool(base_dir=pool_base)
+
+    if tool_id == "claude":
+        auto_import_claude_accounts(pool)
 
     # Route subcommands
     if len(sys.argv) > 1:
         sub = sys.argv[1].lower()
         if sub in ("status", "list", "pool-status", "pool-list"):
-            cmd_status(pool, sys.argv[2:])
+            cmd_status(pool, sys.argv[2:], tool_name=tool_name)
             return
         elif sub in ("switch", "pool-switch"):
             cmd_switch(pool, sys.argv[2:])
             return
         elif sub in ("add", "pool-add"):
-            cmd_add(pool, sys.argv[2:])
+            if tool_id == "claude":
+                cmd_add_claude(pool, sys.argv[2:])
+            else:
+                cmd_add(pool, sys.argv[2:])
             return
         elif sub in ("import", "import-current"):
-            cmd_import_current(pool, sys.argv[2:])
+            if tool_id == "claude":
+                cmd_import_claude(pool, sys.argv[2:])
+            else:
+                cmd_import_current(pool, sys.argv[2:])
             return
         elif sub in ("import-keyring",):
             cmd_import_keyring(pool, sys.argv[2:])
             return
         elif sub in ("test", "probe"):
-            cmd_test(pool, sys.argv[2:])
+            cmd_test(pool, sys.argv[2:], tool_bin=default_bin, tool_id=tool_id)
             return
         elif sub in ("remove", "rm", "delete"):
             cmd_remove(pool, sys.argv[2:])
@@ -661,22 +825,26 @@ def main():
             cmd_update(sys.argv[2:])
             return
         elif sub in ("-v", "--version", "version"):
-            print(f"agy-pool v{VERSION}")
+            print(f"agy-pool v{VERSION} ({tool_name} mode)")
             return
         elif sub in ("-h", "--help", "help"):
-            print(__doc__.strip())
-            print("""
-Commands:
-  agy-pool                         Launch interactive session with active account
-  agy-pool -p "prompt"             Run prompt with automatic quota failover & retry
-  agy-pool add <name>              Log in and add a new Google account
-  agy-pool import [name]           Import current active local agy token into pool
-  agy-pool import-keyring [name]   Import token from system desktop keyring
-  agy-pool status                  Show registered accounts and quota cooldowns
-  agy-pool switch [name]           Switch active account
-  agy-pool test [name]             Probe accounts with a test prompt
-  agy-pool update [--check]        Check for updates or update to the latest version
-  agy-pool remove <name>           Remove an account from the pool
+            print(f"agy-pool v{VERSION} - Multi-account rotation pool for {tool_name}")
+            print(f"""
+Commands ({tool_name} mode):
+  {invoked_name}                         Launch interactive session with active account
+  {invoked_name} -p "prompt"             Run prompt with automatic quota failover & retry
+  {invoked_name} add <name>              Authenticate and add a new account
+  {invoked_name} import [name]           Import current active local credentials into pool
+  {invoked_name} status                  Show registered accounts and quota cooldowns
+  {invoked_name} switch [name]           Switch active account
+  {invoked_name} test [name]             Probe accounts with a test prompt
+  {invoked_name} update [--check]        Check for updates or update to the latest version
+  {invoked_name} remove <name>           Remove an account from the pool
+
+Multi-CLI Support:
+  agy-pool                         Default Google Antigravity mode
+  agy-pool claude [command]        Claude Code mode (or use 'claude-pool')
+  agy-pool copilot [command]       GitHub Copilot mode (or use 'copilot-pool')
 """)
             return
 
@@ -685,32 +853,32 @@ Commands:
     # Normal execution: Get active account
     account = pool.get_active_account()
     if not account:
-        print("[agy-pool] No accounts in pool, executing with default environment...", file=sys.stderr)
-        os.execvp("agy", ["agy"] + sys.argv[1:])
-
-    ensure_account_symlinks(account["home_dir"])
+        print(f"[{tool_id}-pool] No accounts in pool, executing with default environment...", file=sys.stderr)
+        os.execvp(default_bin, [default_bin] + sys.argv[1:])
 
     env = os.environ.copy()
-    env["HOME"] = account["home_dir"]
-
-    # Disconnect from desktop keyring so agy uses the isolated account token in HOME,
-    # without faking an SSH session (which breaks clipboard image pasting in the terminal).
-    env["DBUS_SESSION_BUS_ADDRESS"] = "disabled"
-    env.pop("SSH_CONNECTION", None)
-    env.pop("SSH_CLIENT", None)
-    env.pop("SSH_TTY", None)
+    if tool_id == "claude":
+        ensure_claude_symlinks(account["home_dir"])
+        env["CLAUDE_CONFIG_DIR"] = account["home_dir"]
+    elif tool_id == "copilot":
+        env["XDG_CONFIG_HOME"] = account["home_dir"]
+    else:
+        ensure_account_symlinks(account["home_dir"])
+        env["HOME"] = account["home_dir"]
+        env["DBUS_SESSION_BUS_ADDRESS"] = "disabled"
+        env.pop("SSH_CONNECTION", None)
+        env.pop("SSH_CLIENT", None)
+        env.pop("SSH_TTY", None)
 
     is_print_mode = any(arg in ("-p", "--print") or arg.startswith("-p=") for arg in sys.argv[1:])
 
     if not is_print_mode:
-        # Interactive mode: Replace process directly for full TTY & terminal compatibility
-        print(f"[agy-pool] Account: {account['id']} ({account.get('email')}) | Workspace: {os.getcwd()}", file=sys.stderr)
-        os.execvpe("agy", ["agy"] + sys.argv[1:], env)
+        print(f"[{tool_id}-pool] Account: {account['id']} ({account.get('email')}) | Workspace: {os.getcwd()}", file=sys.stderr)
+        os.execvpe(default_bin, [default_bin] + sys.argv[1:], env)
     else:
-        # Print mode: Stream stdout live, capture stderr for quota detection & failover
         while True:
             proc = subprocess.Popen(
-                ["agy"] + sys.argv[1:],
+                [default_bin] + sys.argv[1:],
                 env=env,
                 stdin=sys.stdin,
                 stdout=sys.stdout,
@@ -719,14 +887,20 @@ Commands:
             )
             _, stderr = proc.communicate()
 
-            if proc.returncode != 0 and is_quota_error(stderr):
-                print(f"\n[agy-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
+            if proc.returncode != 0 and is_quota_error(stderr, tool_id):
+                print(f"\n[{tool_id}-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
                 next_acc = pool.mark_quota_exhausted(account["id"], stderr)
                 if next_acc and next_acc["id"] != account["id"]:
                     account = next_acc
-                    ensure_account_symlinks(next_acc["home_dir"])
-                    env["HOME"] = next_acc["home_dir"]
-                    print(f"[agy-pool] Retrying with account: '{next_acc['id']}' ({next_acc.get('email')})...\n", file=sys.stderr)
+                    if tool_id == "claude":
+                        ensure_claude_symlinks(next_acc["home_dir"])
+                        env["CLAUDE_CONFIG_DIR"] = next_acc["home_dir"]
+                    elif tool_id == "copilot":
+                        env["XDG_CONFIG_HOME"] = next_acc["home_dir"]
+                    else:
+                        ensure_account_symlinks(next_acc["home_dir"])
+                        env["HOME"] = next_acc["home_dir"]
+                    print(f"[{tool_id}-pool] Retrying with account: '{next_acc['id']}' ({next_acc.get('email')})...\n", file=sys.stderr)
                     continue
 
             if stderr:

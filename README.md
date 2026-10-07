@@ -141,6 +141,40 @@ All standard `agy` arguments (`-c`, `--conversation <id>`, `--model`, etc.) pass
 
 ---
 
+## Multi-CLI Tool Support
+
+`agy-pool` extends account rotation and quota failover across other developer AI CLIs:
+
+### Claude Code Support (`claude-pool` or `agy-pool claude`)
+Isolates Claude accounts under `~/.claude_accounts/` while automatically symlinking shared project states, file history, and session context from `~/.claude`:
+
+```bash
+# View Claude pool status (auto-discovers ~/.claude and ~/.claude2 if present)
+claude-pool status
+# or
+agy-pool claude status
+
+# Switch between Claude accounts
+claude-pool switch claude2
+
+# Run non-interactive prompt with auto-failover on 5-hour/weekly limit
+claude-pool -p "Run code review on src/"
+
+# Launch interactive session under the active Claude account
+claude-pool
+```
+
+### GitHub Copilot Support (`copilot-pool` or `agy-pool copilot`)
+Isolates GitHub credentials and tokens under `~/.copilot_accounts/`:
+
+```bash
+copilot-pool status
+copilot-pool switch backup
+copilot-pool -p "Explain this function"
+```
+
+---
+
 ## Architecture & Storage
 
 Accounts and tokens are stored in `~/.gemini_accounts/`:
