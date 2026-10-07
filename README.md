@@ -136,6 +136,7 @@ All standard `agy` arguments (`-c`, `--conversation <id>`, `--model`, etc.) pass
 | `agy-pool status` | View pool accounts, active marker, and cooldown timers |
 | `agy-pool switch [name]` | Switch active account manually |
 | `agy-pool test [name]` | Probe registered accounts with a test prompt |
+| `agy-pool update [--check]` | Check for updates or upgrade to the latest version |
 | `agy-pool remove <name>` | Remove an account from the pool and purge its sandbox |
 
 ---

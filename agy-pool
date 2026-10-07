@@ -18,10 +18,12 @@ import shutil
 import re
 import fcntl
 import base64
+import urllib.request
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
 VERSION = "1.0.0"
+UPDATE_URL = "https://raw.githubusercontent.com/mr-ceo7/agy-pool/main/agy-pool"
 
 DEFAULT_ACCOUNTS_DIR = os.getenv(
     "AGY_ACCOUNTS_DIR",
@@ -539,6 +541,91 @@ def cmd_remove(pool: AccountPool, args: List[str]):
     else:
         print(f"Account '{acc_name}' not found.", file=sys.stderr)
 
+def get_remote_version() -> Tuple[Optional[str], Optional[str]]:
+    """Fetch remote content and parsed version string."""
+    try:
+        req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"agy-pool/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content = resp.read().decode("utf-8")
+        match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', content)
+        if match:
+            return match.group(1), content
+    except Exception:
+        pass
+    return None, None
+
+def check_for_updates_background(pool_base_dir: str):
+    """Check for updates every 24 hours non-blockingly."""
+    cache_file = os.path.join(pool_base_dir, ".update_check.json")
+    now = time.time()
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, "r") as f:
+                data = json.load(f)
+            if now - data.get("timestamp", 0) < 86400:
+                remote_ver = data.get("remote_version")
+                if remote_ver and remote_ver != VERSION:
+                    print(f"[agy-pool] Notice: Update available (v{VERSION} -> v{remote_ver}). Run 'agy-pool update' to upgrade.", file=sys.stderr)
+                return
+    except Exception:
+        pass
+
+    def _worker():
+        r_ver, _ = get_remote_version()
+        if r_ver:
+            try:
+                with open(cache_file, "w") as f:
+                    json.dump({"timestamp": time.time(), "remote_version": r_ver}, f)
+            except Exception:
+                pass
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+def cmd_update(args: List[str]):
+    check_only = "--check" in args or "-c" in args
+    print(f"Checking for updates (current version: v{VERSION})...")
+    remote_version, content = get_remote_version()
+    if not remote_version or not content:
+        print("Failed to fetch remote version. Check your internet connection.", file=sys.stderr)
+        sys.exit(1)
+
+    if remote_version == VERSION:
+        print(f"✓ agy-pool is already up to date (v{VERSION}).")
+        return
+
+    print(f"A new version is available: v{remote_version} (current: v{VERSION})")
+    if check_only:
+        print("Run 'agy-pool update' to install.")
+        return
+
+    # Determine target binary location
+    target_path = os.path.realpath(sys.argv[0])
+    if not os.path.basename(target_path).startswith("agy-pool") or not os.access(target_path, os.W_OK):
+        candidate = os.path.expanduser("~/.local/bin/agy-pool")
+        if os.path.exists(candidate) and os.access(candidate, os.W_OK):
+            target_path = candidate
+        else:
+            print(f"Cannot write to executable at {target_path}.", file=sys.stderr)
+            print("Try updating with: curl -fsSL https://raw.githubusercontent.com/mr-ceo7/agy-pool/main/install.sh | bash", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        compile(content, target_path, "exec")
+    except SyntaxError as e:
+        print(f"Error: Downloaded script has syntax errors: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    tmp_path = target_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_path, 0o755)
+        os.replace(tmp_path, target_path)
+        print(f"✓ Successfully updated agy-pool to v{remote_version} at {target_path}")
+    except Exception as e:
+        print(f"Error applying update: {e}", file=sys.stderr)
+        sys.exit(1)
+
 # ---------------------------------------------------------------------------
 # Main Execution Entry Point
 # ---------------------------------------------------------------------------
@@ -570,6 +657,9 @@ def main():
         elif sub in ("remove", "rm", "delete"):
             cmd_remove(pool, sys.argv[2:])
             return
+        elif sub in ("update", "upgrade"):
+            cmd_update(sys.argv[2:])
+            return
         elif sub in ("-v", "--version", "version"):
             print(f"agy-pool v{VERSION}")
             return
@@ -585,9 +675,12 @@ Commands:
   agy-pool status                  Show registered accounts and quota cooldowns
   agy-pool switch [name]           Switch active account
   agy-pool test [name]             Probe accounts with a test prompt
+  agy-pool update [--check]        Check for updates or update to the latest version
   agy-pool remove <name>           Remove an account from the pool
 """)
             return
+
+    check_for_updates_background(pool.base_dir)
 
     # Normal execution: Get active account
     account = pool.get_active_account()
