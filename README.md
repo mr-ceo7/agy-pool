@@ -1,12 +1,12 @@
 # agy-pool
 
-Multi-account rotation, quota failover, and unified conversation management wrapper for Google's Antigravity CLI (`agy`).
+Multi-account rotation, quota failover, and unified conversation management wrapper for Google's Antigravity CLI (`agy`), Anthropic's Claude Code (`claude`), and GitHub Copilot (`copilot`).
 
 ```
   ┌────────────────────────────────────────────────────────┐
   │                        agy-pool                        │
   └───────┬────────────────────────┬───────────────────────┘
-          │ (Active Account)       │ (Failover on 429)
+          │ (Active Account)       │ (Failover on Quota)
           ▼                        ▼
     ┌───────────┐            ┌───────────┐
     │ Account A │            │ Account B │
@@ -14,23 +14,19 @@ Multi-account rotation, quota failover, and unified conversation management wrap
           │                        │
           └───────────┬────────────┘
                       ▼
-        ~/.gemini/antigravity-cli/
-        ├── brain/                    (Shared transcripts & artifacts)
-        ├── conversations/            (Shared SQLite conversation databases)
-        ├── conversation_summaries.db (Unified /resume index)
-        └── history.jsonl             (Unified prompt history)
+     Shared Workspace & History Storage
 ```
 
 ---
 
 ## The Problem
 
-When running complex development tasks, agent loops, or extensive refactors with `agy`, you quickly encounter hard Google account quota limits (`RESOURCE_EXHAUSTED` / `HTTP 429`).
+When running complex development tasks, agent loops, or extensive refactors with modern AI developer CLIs, you quickly encounter hard account quota limits (`RESOURCE_EXHAUSTED` / `HTTP 429` / 5-hour & weekly limits).
 
 Managing multiple accounts manually is frustrating because:
-1. **Desktop Keyring Collisions:** `agy` hardcodes a single keyring service (`service: gemini, username: antigravity`). Running multiple accounts on the same desktop causes the GNOME keyring to overwrite tokens or silently hijack sessions.
-2. **Broken Terminal Image Uploads:** Naive headless workarounds (such as injecting fake SSH environment variables) trick `agy` into believing the session is remote, disabling local clipboard image pasting (`wl-paste` / `xclip`) with `Image upload is not supported in this terminal`.
-3. **Fragmented History:** Isolating `$HOME` isolates conversation databases, breaking session resumption (`/resume`, `--continue`) across account switches.
+1. **Desktop Keyring Collisions:** CLIs hardcode desktop secret-service keyrings. Running multiple accounts on the same desktop causes the system keyring to overwrite tokens or silently hijack sessions.
+2. **Broken Terminal Image Uploads:** Naive headless workarounds (such as injecting fake SSH environment variables) trick tools into believing the session is remote, disabling local clipboard image pasting (`wl-paste` / `xclip`) with `Image upload is not supported in this terminal`.
+3. **Fragmented History:** Isolating configuration directories isolates conversation databases and project state, breaking session resumption across account switches.
 
 `agy-pool` resolves all three issues.
 
@@ -38,11 +34,12 @@ Managing multiple accounts manually is frustrating because:
 
 ## Features
 
-* **Automatic Quota Failover:** Runs non-interactive prompts with live output streaming. If an account hits a quota limit, `agy-pool` puts it in cooldown, rolls over to the next healthy account, and retries automatically.
-* **Unified Conversation History:** Transcripts, SQLite databases, `/resume` indexes, and prompt history are automatically symlinked to a central store. Switching accounts never breaks session continuity or `--continue`.
+* **Multi-CLI Tool Rotation:** Seamlessly manages account pools and quota failovers for Google Antigravity (`agy`), Anthropic Claude Code (`claude` / `claude2`), and GitHub Copilot (`copilot`).
+* **Automatic Quota Failover:** Runs non-interactive prompts with live output streaming. If an account hits a quota limit, it enters cooldown, rolls over to the next healthy account, and retries automatically.
+* **Unified Conversation History:** Transcripts, SQLite databases, `/resume` indexes, and prompt history are automatically symlinked to a central store. Switching accounts never breaks session continuity.
 * **Zero Keyring Collisions:** Neutralizes desktop SecretService D-Bus hijacking so each account strictly loads its own token from its isolated sandbox.
 * **Native Clipboard & Image Paste:** Avoids fake SSH environments, keeping Wayland (`wl-paste`) and X11 (`xclip`) active for pasting images directly into the terminal.
-* **Zero Dependencies:** Written in 100% standard-library Python 3. No pip packages required.
+* **Zero Dependencies:** Written in 100% standard-library Python 3. No external pip packages required.
 
 ---
 

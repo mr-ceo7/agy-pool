@@ -23,6 +23,8 @@ classifiers = [
 
 [project.scripts]
 agy-pool = "agy_pool.cli:main"
+claude-pool = "agy_pool.cli:main"
+copilot-pool = "agy_pool.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
