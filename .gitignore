@@ -37,3 +37,6 @@ ENV/
 
 # Local runtime testing accounts
 .gemini_accounts/
+
+# Test cache
+.pytest_cache/

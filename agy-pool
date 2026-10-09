@@ -22,7 +22,7 @@ import urllib.request
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/mr-ceo7/agy-pool/main/agy-pool"
 
 DEFAULT_ACCOUNTS_DIR = os.getenv(
@@ -233,12 +233,15 @@ class AccountPool:
             if not email:
                 email = f"{clean_id}@claude"
         elif tool_type == "copilot":
-            for fname in ["hosts.yml", "config.json"]:
-                src = os.path.join(source_dir, fname)
-                if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(account_home, fname))
+            # config.json records which GitHub user is logged in; the token itself stays in the
+            # system keyring, filed under that user, so accounts of different users never collide
+            src = os.path.join(source_dir, "config.json")
+            dst = os.path.join(account_home, "config.json")
+            if os.path.isfile(src) and os.path.realpath(src) != os.path.realpath(dst):
+                shutil.copy2(src, dst)
             if not email:
-                email = f"{clean_id}@copilot"
+                login = copilot_login(account_home)
+                email = f"{login}@github" if login else f"{clean_id}@copilot"
 
         with self.lock:
             with self._file_lock():
@@ -363,6 +366,52 @@ def ensure_claude_symlinks(account_home: str):
                 os.symlink(src, dst)
             except Exception:
                 pass
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot CLI
+# ---------------------------------------------------------------------------
+
+# Copilot keeps everything in COPILOT_HOME (default ~/.copilot). Each pool account gets its own
+# COPILOT_HOME holding its own config.json (the logged-in user); these items are shared from the
+# real home so sessions, history and plugins stay the same whichever account is active.
+COPILOT_SHARED_ITEMS = [
+    "session-state", "session-store.db", "command-history-state.json",
+    "installed-plugins", "permissions-config.json",
+]
+
+
+def real_copilot_home() -> str:
+    return os.path.expanduser(os.environ.get("COPILOT_HOME") or "~/.copilot")
+
+
+def copilot_login(copilot_home: str) -> Optional[str]:
+    """GitHub username recorded in a Copilot config.json, or None."""
+    try:
+        with open(os.path.join(copilot_home, "config.json"), encoding="utf-8") as f:
+            text = re.sub(r"(?m)^\s*//.*$", "", f.read())
+        data = json.loads(text)
+    except (OSError, ValueError):
+        return None
+    user = data.get("lastLoggedInUser") or {}
+    if not user.get("login") and data.get("loggedInUsers"):
+        user = data["loggedInUsers"][0]
+    return user.get("login") or None
+
+
+def ensure_copilot_symlinks(account_home: str, real_home: Optional[str] = None):
+    real_home = real_home or real_copilot_home()
+    if not account_home or os.path.realpath(account_home) == os.path.realpath(real_home):
+        return
+    os.makedirs(account_home, exist_ok=True)
+    for item in COPILOT_SHARED_ITEMS:
+        src = os.path.join(real_home, item)
+        dst = os.path.join(account_home, item)
+        if os.path.exists(src) and not os.path.exists(dst) and not os.path.islink(dst):
+            try:
+                os.symlink(src, dst)
+            except OSError:
+                pass
+
 
 def auto_import_claude_accounts(pool: AccountPool):
     """Auto-imports ~/.claude as primary and ~/.claude2 as secondary if pool is empty."""
@@ -597,11 +646,14 @@ def cmd_test(pool: AccountPool, args: List[str], tool_bin: str = "agy", tool_id:
         acc_id = acc["id"]
         acc_home = acc["home_dir"]
         env = os.environ.copy()
+        cmd = [tool_bin, "-p", "Respond with PONG"]
         if tool_id == "claude":
             ensure_claude_symlinks(acc_home)
             env["CLAUDE_CONFIG_DIR"] = acc_home
         elif tool_id == "copilot":
-            env["XDG_CONFIG_HOME"] = acc_home
+            ensure_copilot_symlinks(acc_home)
+            env["COPILOT_HOME"] = acc_home
+            cmd = [tool_bin, "-p", "Respond with exactly the word PONG", "-s", "--no-auto-update"]
         else:
             ensure_account_symlinks(acc_home)
             env["HOME"] = acc_home
@@ -613,11 +665,11 @@ def cmd_test(pool: AccountPool, args: List[str], tool_bin: str = "agy", tool_id:
 
         start = time.time()
         res = subprocess.run(
-            [tool_bin, "-p", "Respond with PONG"],
+            cmd,
             env=env,
             capture_output=True,
             text=True,
-            timeout=35
+            timeout=90
         )
         elapsed = time.time() - start
 
@@ -745,6 +797,49 @@ def cmd_add_claude(pool: AccountPool, args: List[str]):
     record = pool.add_account_from_dir(clean_id, account_home, tool_type="claude", email=f"{clean_id}@claude")
     print(f"\n✓ Registered Claude account '{clean_id}' into pool.")
 
+def cmd_add_copilot(pool: AccountPool, args: List[str]):
+    if not args:
+        print("Usage: copilot-pool add <account_name>", file=sys.stderr)
+        sys.exit(1)
+    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", args[0]).strip("_")
+    account_home = os.path.join(pool.accounts_dir, clean_id)
+    os.makedirs(account_home, exist_ok=True)
+    ensure_copilot_symlinks(account_home)
+
+    env = os.environ.copy()
+    env["COPILOT_HOME"] = account_home
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        env.pop(var, None)  # these would override the account being logged in
+    print(f"\n[copilot-pool] Logging in a GitHub account for '{clean_id}'...")
+    print("Sign in as the GitHub user this pool entry should use.\n")
+    subprocess.run(["copilot", "login"], env=env)
+
+    login = copilot_login(account_home)
+    if not login:
+        print("\n[FAILED] Login was not completed (no user recorded in config.json).", file=sys.stderr)
+        sys.exit(1)
+    others = [a for a in pool.list_accounts() if a["id"] != clean_id and a.get("email") == f"{login}@github"]
+    if others:
+        print(f"Note: '{others[0]['id']}' is already the same GitHub user ({login}); "
+              "rotating between them will not add quota.", file=sys.stderr)
+    pool.add_account_from_dir(clean_id, account_home, tool_type="copilot")
+    print(f"\n✓ Registered Copilot account '{clean_id}' ({login}) into pool.")
+
+
+def cmd_import_copilot(pool: AccountPool, args: List[str]):
+    """copilot-pool import [name] [copilot_home]: register an already logged-in Copilot home."""
+    source_dir = os.path.expanduser(args[1]) if len(args) > 1 else real_copilot_home()
+    login = copilot_login(source_dir)
+    if not login:
+        print(f"Error: no logged-in GitHub user found in {source_dir}/config.json. Run 'copilot login' first.",
+              file=sys.stderr)
+        sys.exit(1)
+    name = args[0] if args else login
+    record = pool.add_account_from_dir(name, source_dir, tool_type="copilot")
+    ensure_copilot_symlinks(record["home_dir"], real_home=source_dir)
+    print(f"✓ Imported Copilot account '{record['id']}' ({login}) from {source_dir}")
+
+
 def cmd_import_claude(pool: AccountPool, args: List[str]):
     source = args[0] if args else "primary"
     source_dir = os.path.expanduser(f"~/.{source}") if not os.path.isabs(source) else source
@@ -803,16 +898,23 @@ def main():
         elif sub in ("add", "pool-add"):
             if tool_id == "claude":
                 cmd_add_claude(pool, sys.argv[2:])
+            elif tool_id == "copilot":
+                cmd_add_copilot(pool, sys.argv[2:])
             else:
                 cmd_add(pool, sys.argv[2:])
             return
         elif sub in ("import", "import-current"):
             if tool_id == "claude":
                 cmd_import_claude(pool, sys.argv[2:])
+            elif tool_id == "copilot":
+                cmd_import_copilot(pool, sys.argv[2:])
             else:
                 cmd_import_current(pool, sys.argv[2:])
             return
         elif sub in ("import-keyring",):
+            if tool_id != "agy":
+                print("import-keyring only applies to agy accounts.", file=sys.stderr)
+                sys.exit(1)
             cmd_import_keyring(pool, sys.argv[2:])
             return
         elif sub in ("test", "probe"):
@@ -861,7 +963,8 @@ Multi-CLI Support:
         ensure_claude_symlinks(account["home_dir"])
         env["CLAUDE_CONFIG_DIR"] = account["home_dir"]
     elif tool_id == "copilot":
-        env["XDG_CONFIG_HOME"] = account["home_dir"]
+        ensure_copilot_symlinks(account["home_dir"])
+        env["COPILOT_HOME"] = account["home_dir"]
     else:
         ensure_account_symlinks(account["home_dir"])
         env["HOME"] = account["home_dir"]
@@ -870,7 +973,8 @@ Multi-CLI Support:
         env.pop("SSH_CLIENT", None)
         env.pop("SSH_TTY", None)
 
-    is_print_mode = any(arg in ("-p", "--print") or arg.startswith("-p=") for arg in sys.argv[1:])
+    is_print_mode = any(arg in ("-p", "--print", "--prompt") or arg.startswith(("-p=", "--prompt="))
+                        for arg in sys.argv[1:])
 
     if not is_print_mode:
         print(f"[{tool_id}-pool] Account: {account['id']} ({account.get('email')}) | Workspace: {os.getcwd()}", file=sys.stderr)
@@ -896,7 +1000,8 @@ Multi-CLI Support:
                         ensure_claude_symlinks(next_acc["home_dir"])
                         env["CLAUDE_CONFIG_DIR"] = next_acc["home_dir"]
                     elif tool_id == "copilot":
-                        env["XDG_CONFIG_HOME"] = next_acc["home_dir"]
+                        ensure_copilot_symlinks(next_acc["home_dir"])
+                        env["COPILOT_HOME"] = next_acc["home_dir"]
                     else:
                         ensure_account_symlinks(next_acc["home_dir"])
                         env["HOME"] = next_acc["home_dir"]

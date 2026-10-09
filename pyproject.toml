@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agy-pool"
-version = "1.0.0"
+version = "1.1.0"
 description = "Multi-account rotation, quota failover, and unified conversation management for Google Antigravity CLI (agy)"
 readme = "README.md"
 authors = [
