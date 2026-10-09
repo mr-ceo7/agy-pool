@@ -1,0 +1,101 @@
+<svg class="rich-terminal" viewBox="0 0 1043 318.4" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-1042896938-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-1042896938-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-1042896938-r1 { fill: #6a9955;font-weight: bold }
+.terminal-1042896938-r2 { fill: #e6e6e6;font-weight: bold }
+.terminal-1042896938-r3 { fill: #c5c8c6 }
+.terminal-1042896938-r4 { fill: #c8ccd4 }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-1042896938-clip-terminal">
+      <rect x="0" y="0" width="1023.8" height="267.4" />
+    </clipPath>
+    <clipPath id="terminal-1042896938-line-0">
+    <rect x="0" y="1.5" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-1">
+    <rect x="0" y="25.9" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-2">
+    <rect x="0" y="50.3" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-3">
+    <rect x="0" y="74.7" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-4">
+    <rect x="0" y="99.1" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-5">
+    <rect x="0" y="123.5" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-6">
+    <rect x="0" y="147.9" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-7">
+    <rect x="0" y="172.3" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-8">
+    <rect x="0" y="196.7" width="1024.8" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1042896938-line-9">
+    <rect x="0" y="221.1" width="1024.8" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1041" height="316.4" rx="8"/><text class="terminal-1042896938-title" fill="#c5c8c6" text-anchor="middle" x="520" y="27">agy-pool:&#160;quota&#160;failover</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-1042896938-clip-terminal)">
+    
+    <g class="terminal-1042896938-matrix">
+    <text class="terminal-1042896938-r1" x="0" y="20" textLength="24.4" clip-path="url(#terminal-1042896938-line-0)">$&#160;</text><text class="terminal-1042896938-r2" x="24.4" y="20" textLength="561.2" clip-path="url(#terminal-1042896938-line-0)">agy-pool&#160;-p&#160;&quot;List&#160;the&#160;open&#160;TODOs&#160;in&#160;this&#160;repo&quot;</text><text class="terminal-1042896938-r3" x="1024.8" y="20" textLength="12.2" clip-path="url(#terminal-1042896938-line-0)">
+</text><text class="terminal-1042896938-r3" x="1024.8" y="44.4" textLength="12.2" clip-path="url(#terminal-1042896938-line-1)">
+</text><text class="terminal-1042896938-r4" x="0" y="68.8" textLength="878.4" clip-path="url(#terminal-1042896938-line-2)">[agy-pool]&#160;Quota&#160;limit&#160;hit&#160;on&#160;&#x27;primary&#x27;.&#160;Rolling&#160;over&#160;to&#160;next&#160;account...</text><text class="terminal-1042896938-r3" x="1024.8" y="68.8" textLength="12.2" clip-path="url(#terminal-1042896938-line-2)">
+</text><text class="terminal-1042896938-r4" x="0" y="93.2" textLength="817.4" clip-path="url(#terminal-1042896938-line-3)">[agy-pool]&#160;Account&#160;&#x27;primary&#x27;&#160;quota&#160;exhausted&#160;(cooling&#160;down&#160;for&#160;60m)</text><text class="terminal-1042896938-r3" x="1024.8" y="93.2" textLength="12.2" clip-path="url(#terminal-1042896938-line-3)">
+</text><text class="terminal-1042896938-r4" x="0" y="117.6" textLength="732" clip-path="url(#terminal-1042896938-line-4)">[agy-pool]&#160;Failover&#160;successful!&#160;New&#160;active&#160;account:&#160;&#x27;backup&#x27;</text><text class="terminal-1042896938-r3" x="1024.8" y="117.6" textLength="12.2" clip-path="url(#terminal-1042896938-line-4)">
+</text><text class="terminal-1042896938-r4" x="0" y="142" textLength="805.2" clip-path="url(#terminal-1042896938-line-5)">[agy-pool]&#160;Retrying&#160;with&#160;account:&#160;&#x27;backup&#x27;&#160;(backup@example.com)...</text><text class="terminal-1042896938-r3" x="1024.8" y="142" textLength="12.2" clip-path="url(#terminal-1042896938-line-5)">
+</text><text class="terminal-1042896938-r3" x="1024.8" y="166.4" textLength="12.2" clip-path="url(#terminal-1042896938-line-6)">
+</text><text class="terminal-1042896938-r4" x="0" y="190.8" textLength="231.8" clip-path="url(#terminal-1042896938-line-7)">Found&#160;3&#160;open&#160;TODOs:</text><text class="terminal-1042896938-r3" x="1024.8" y="190.8" textLength="12.2" clip-path="url(#terminal-1042896938-line-7)">
+</text><text class="terminal-1042896938-r4" x="0" y="215.2" textLength="671" clip-path="url(#terminal-1042896938-line-8)">&#160;&#160;src/auth/routes.py:41&#160;&#160;&#160;validate&#160;refresh-token&#160;expiry</text><text class="terminal-1042896938-r3" x="1024.8" y="215.2" textLength="12.2" clip-path="url(#terminal-1042896938-line-8)">
+</text><text class="terminal-1042896938-r4" x="0" y="239.6" textLength="524.6" clip-path="url(#terminal-1042896938-line-9)">&#160;&#160;src/auth/routes.py:88&#160;&#160;&#160;rate-limit&#160;/login</text><text class="terminal-1042896938-r3" x="1024.8" y="239.6" textLength="12.2" clip-path="url(#terminal-1042896938-line-9)">
+</text><text class="terminal-1042896938-r4" x="0" y="264" textLength="634.4" clip-path="url(#terminal-1042896938-line-10)">&#160;&#160;src/billing/invoice.py:12&#160;&#160;remove&#160;legacy&#160;tax&#160;table</text><text class="terminal-1042896938-r3" x="1024.8" y="264" textLength="12.2" clip-path="url(#terminal-1042896938-line-10)">
+</text>
+    </g>
+    </g>
+</svg>
