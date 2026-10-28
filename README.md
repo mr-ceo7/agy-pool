@@ -1,5 +1,7 @@
 # agy-pool
 
+![agy-pool banner](docs/banner.svg)
+
 Keeps several accounts for an AI coding CLI in one pool, and switches to the next account when the current one runs out of quota. It works with Google Antigravity (`agy`), Claude Code (`claude`) and the GitHub Copilot CLI (`copilot`). Your conversations, history and settings stay shared, whichever account is active.
 
 ![agy-pool hitting a quota limit on one account and retrying on the next](docs/failover.svg)

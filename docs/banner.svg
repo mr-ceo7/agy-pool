@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="100%" height="auto">
+  <defs>
+    <linearGradient id="agyBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a0e17" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#090d16" />
+    </linearGradient>
+    <linearGradient id="agyCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.95" />
+    </linearGradient>
+    <linearGradient id="agyGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="35%" stop-color="#818cf8" />
+      <stop offset="70%" stop-color="#c084fc" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+    <linearGradient id="agyGlowLine" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0" />
+      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0" />
+    </linearGradient>
+    <filter id="shadowAgy" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="420" rx="16" fill="url(#agyBg)" />
+  <rect width="1198" height="418" x="1" y="1" rx="15" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid texture -->
+  <g opacity="0.07" stroke="#e2e8f0" stroke-width="1">
+    <line x1="0" y1="70" x2="1200" y2="70" />
+    <line x1="0" y1="140" x2="1200" y2="140" />
+    <line x1="0" y1="210" x2="1200" y2="210" />
+    <line x1="0" y1="280" x2="1200" y2="280" />
+    <line x1="0" y1="350" x2="1200" y2="350" />
+    <line x1="150" y1="0" x2="150" y2="420" />
+    <line x1="300" y1="0" x2="300" y2="420" />
+    <line x1="450" y1="0" x2="450" y2="420" />
+    <line x1="600" y1="0" x2="600" y2="420" />
+    <line x1="750" y1="0" x2="750" y2="420" />
+    <line x1="900" y1="0" x2="900" y2="420" />
+    <line x1="1050" y1="0" x2="1050" y2="420" />
+  </g>
+
+  <!-- Top accent line -->
+  <line x1="100" y1="2" x2="1100" y2="2" stroke="url(#agyGlowLine)" stroke-width="3" />
+
+  <!-- Title & Branding -->
+  <g transform="translate(60, 75)">
+    <!-- Icon -->
+    <rect width="44" height="44" rx="10" fill="#1e1b4b" stroke="#818cf8" stroke-width="2" />
+    <circle cx="22" cy="22" r="12" fill="none" stroke="#38bdf8" stroke-width="2.5" />
+    <path d="M16 22L20 26L28 17" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Text -->
+    <text x="56" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="800" fill="url(#agyGrad)" letter-spacing="-0.5">agy-pool</text>
+    <text x="215" y="30" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="600" fill="#64748b" letter-spacing="1.5">v1.1.0</text>
+    <text x="0" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="17" font-weight="400" fill="#94a3b8">Multi-account quota failover and unified conversation pool for AI coding CLIs.</text>
+  </g>
+
+  <!-- Feature Badges -->
+  <g transform="translate(60, 175)">
+    <!-- Badge 1: Antigravity -->
+    <rect width="180" height="32" rx="16" fill="#0c4a6e" fill-opacity="0.6" stroke="#0284c7" stroke-width="1.5" />
+    <text x="90" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#38bdf8" text-anchor="middle">✦ Google Antigravity</text>
+
+    <!-- Badge 2: Claude Code -->
+    <g transform="translate(192, 0)">
+      <rect width="150" height="32" rx="16" fill="#451a03" fill-opacity="0.6" stroke="#d97706" stroke-width="1.5" />
+      <text x="75" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#fbbf24" text-anchor="middle">✴ Claude Code</text>
+    </g>
+
+    <!-- Badge 3: GitHub Copilot -->
+    <g transform="translate(354, 0)">
+      <rect width="165" height="32" rx="16" fill="#1e1b4b" fill-opacity="0.6" stroke="#818cf8" stroke-width="1.5" />
+      <text x="82" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#a5b4fc" text-anchor="middle">🐙 GitHub Copilot</text>
+    </g>
+
+    <!-- Badge 4: Auto Failover -->
+    <g transform="translate(531, 0)">
+      <rect width="185" height="32" rx="16" fill="#064e3b" fill-opacity="0.6" stroke="#10b981" stroke-width="1.5" />
+      <text x="92" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="700" fill="#34d399" text-anchor="middle">🔄 Auto Quota Failover</text>
+    </g>
+  </g>
+
+  <!-- Interactive Terminal Card -->
+  <g transform="translate(60, 230)" filter="url(#shadowAgy)">
+    <rect width="1080" height="150" rx="12" fill="url(#agyCard)" stroke="#334155" stroke-width="1.5" />
+    
+    <circle cx="24" cy="20" r="5.5" fill="#ef4444" />
+    <circle cx="42" cy="20" r="5.5" fill="#f59e0b" />
+    <circle cx="60" cy="20" r="5.5" fill="#10b981" />
+    <text x="95" y="24" font-family="'Fira Code', monospace" font-size="12" fill="#64748b">agy-pool status — seamless failover pipeline</text>
+
+    <!-- Node 1: Account 1 Hits Limit -->
+    <g transform="translate(30, 48)">
+      <rect width="280" height="80" rx="8" fill="#0f172a" stroke="#ef4444" stroke-width="1.5" />
+      <text x="16" y="28" font-family="'Fira Code', monospace" font-size="13" font-weight="700" fill="#f87171">primary: GOOGLE</text>
+      <text x="16" y="48" font-family="'Fira Code', monospace" font-size="11" fill="#cbd5e1">429 RESOURCE_EXHAUSTED</text>
+      <text x="16" y="66" font-family="'Fira Code', monospace" font-size="11" fill="#94a3b8">Cooling down (60m remaining)</text>
+      <circle cx="254" cy="25" r="5" fill="#ef4444" />
+    </g>
+
+    <!-- Arrow 1: Automatic Failover -->
+    <g transform="translate(325, 78)">
+      <line x1="0" y1="10" x2="80" y2="10" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 4" />
+      <polygon points="80,6 90,10 80,14" fill="#f59e0b" />
+      <text x="45" y="0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="700" fill="#fbbf24" text-anchor="middle">FAILOVER</text>
+      <text x="45" y="25" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" fill="#64748b" text-anchor="middle">INSTANT</text>
+    </g>
+
+    <!-- Node 2: Backup Account -->
+    <g transform="translate(430, 48)">
+      <rect width="280" height="80" rx="8" fill="#0f172a" stroke="#10b981" stroke-width="1.5" />
+      <text x="16" y="28" font-family="'Fira Code', monospace" font-size="13" font-weight="700" fill="#34d399">backup: GOOGLE</text>
+      <text x="16" y="48" font-family="'Fira Code', monospace" font-size="11" fill="#cbd5e1">Active &amp; streaming prompt</text>
+      <text x="16" y="66" font-family="'Fira Code', monospace" font-size="11" fill="#64748b">Quota healthy • 200 OK</text>
+      <circle cx="254" cy="25" r="5" fill="#10b981" />
+    </g>
+
+    <!-- Node 3: Unified State -->
+    <g transform="translate(735, 78)">
+      <line x1="0" y1="10" x2="50" y2="10" stroke="#38bdf8" stroke-width="2" />
+      <polygon points="50,6 60,10 50,14" fill="#38bdf8" />
+    </g>
+
+    <g transform="translate(810, 48)">
+      <rect width="240" height="80" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" />
+      <text x="16" y="28" font-family="'Fira Code', monospace" font-size="12" font-weight="700" fill="#38bdf8">Unified State</text>
+      <text x="16" y="48" font-family="'Fira Code', monospace" font-size="11" fill="#94a3b8">Shared ~/.gemini</text>
+      <text x="16" y="66" font-family="'Fira Code', monospace" font-size="11" fill="#10b981">● /resume preserved</text>
+    </g>
+  </g>
+</svg>
