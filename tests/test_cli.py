@@ -1,5 +1,7 @@
 import json
 import os
+import signal
+import sys
 
 import pytest
 
@@ -59,6 +61,80 @@ def test_failover_rolls_to_next_ready_account(tmp_path):
     nxt = pool.mark_quota_exhausted("a", "429")
     assert nxt["id"] == "b" and pool.get_active_account()["id"] == "b"
     assert pool.mark_quota_exhausted("b", "429") is None  # everyone cooling down
+
+
+def test_ctrl_c_switches_to_next_ready_account_without_cooling_current(tmp_path):
+    pool = cli.AccountPool(base_dir=str(tmp_path / "pool"))
+    for name in ("a", "b"):
+        pool.add_account_from_dir(name, str(tmp_path), tool_type="claude")
+    nxt = pool.switch_to_next_ready("a")
+    assert nxt["id"] == "b"
+    assert pool.get_active_account()["id"] == "b"
+    assert pool.list_accounts()[0]["status"] == "ready"
+
+
+def test_interactive_resume_args_preserve_explicit_conversation():
+    assert cli.interactive_resume_args(["--model", "test"]) == ["--model", "test", "--continue"]
+    assert cli.interactive_resume_args(["--conversation", "abc"]) == ["--conversation", "abc"]
+    assert cli.interactive_resume_args(["-c"]) == ["-c"]
+
+
+def test_interactive_session_detects_quota_output(tmp_path, monkeypatch):
+    stdin = open(os.devnull, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger = cli.run_interactive_session(
+            [sys.executable, "-c", "import time; print('Error 429: RESOURCE_EXHAUSTED', flush=True); time.sleep(30)"],
+            os.environ.copy(),
+        )
+        output.flush()
+        assert trigger == "quota"
+        assert code == -signal.SIGINT
+        assert b"RESOURCE_EXHAUSTED" in (tmp_path / "terminal-output").read_bytes()
+    finally:
+        stdin.close()
+        output.close()
+
+
+def test_interactive_session_ctrl_c_requests_rotation(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"\x03")
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger = cli.run_interactive_session(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            os.environ.copy(),
+        )
+        assert trigger == "interrupt"
+        assert code == -signal.SIGINT
+    finally:
+        stdin.close()
+        output.close()
+
+
+def test_interactive_session_drains_output_after_process_exit(tmp_path, monkeypatch):
+    stdin = open(os.devnull, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger = cli.run_interactive_session(
+            [sys.executable, "-c", "print('x' * 12000, end='', flush=True)"],
+            os.environ.copy(),
+        )
+        output.flush()
+        assert code == 0
+        assert trigger is None
+        assert (tmp_path / "terminal-output").read_bytes() == b"x" * 12000
+    finally:
+        stdin.close()
+        output.close()
 
 
 def test_standalone_script_matches_package():

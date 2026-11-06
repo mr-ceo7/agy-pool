@@ -91,12 +91,12 @@ The same commands work as `claude-pool …`, `copilot-pool …`, or `agy-pool cl
 ## How failover works
 
 - **Picking an account.** Each run uses the active account. If that account is cooling down, agy-pool moves to the next ready one in order. If every account is cooling down, it uses the one whose cooldown ends first.
-- **Spotting a quota error.** Failover only happens with `-p` / `--print` / `--prompt`. agy-pool captures the CLI's error output and checks it for quota messages:
+- **Spotting a quota error.** In `-p` / `--print` / `--prompt` mode, agy-pool checks captured error output. In interactive agy mode, it monitors terminal output for quota messages:
   - Claude: `429`, `rate_limit`, `usage_limit_reached`, `weekly limit`, `5-hour limit`, "limit … resets", `out_of_credits`, `overloaded_error`.
   - agy and Copilot: `429`, `RESOURCE_EXHAUSTED`, "quota exceeded", "rate limit", "too many requests", and similar.
-- **Retrying.** On a quota error the account cools down for 60 minutes and the same command runs again on the next ready account. This repeats until a run succeeds or no ready account is left. Then the last error is shown and the CLI's exit code is returned.
-- **Interactive sessions** start on the active account. They can't switch accounts mid-session; start a new one after the limit hits.
-- **Output.** The answer streams to your terminal as usual. Error output is held back until the run finishes, so a failed attempt doesn't clutter the screen.
+- **Retrying.** On a quota error in print mode, the account cools down for 60 minutes and the same command runs again on the next ready account. In interactive agy mode, agy-pool switches accounts and resumes the shared conversation with `--continue`. Both repeat until a run succeeds or no ready account is left.
+- **Interactive sessions** monitor agy's terminal output for quota errors. On a match, agy-pool interrupts the current process, marks that account cooling down, switches accounts, and resumes the shared conversation with `--continue`. Pressing Ctrl+C also switches to the next ready account and resumes; use agy's normal exit action (such as Ctrl+D) to leave without switching.
+- **Output.** Print-mode answers stream to your terminal as usual; interactive agy sessions relay the terminal directly.
 - **Changing the cooldown.** The length is `cooldown_seconds` in the pool's `accounts.json` (default `3600`).
 
 ## Claude Code
@@ -187,7 +187,7 @@ This removes `agy-pool`, `claude-pool` and `copilot-pool` from `~/.local/bin` an
 | Problem | Fix |
 |---|---|
 | `add` finishes with "Login was not completed" | The login wasn't finished before the CLI exited. Run `add` again and complete the browser sign-in |
-| Failover never triggers | It only works with `-p`. Check that the CLI's error matches one of the patterns in [How failover works](#how-failover-works) |
+| Failover never triggers | One-shot failover works with `-p`; interactive agy failover requires a quota message that matches one of the patterns in [How failover works](#how-failover-works) |
 | "All accounts are in quota cooldown" | Every account hit its limit within the last hour. Wait, add another account, or clear `cooldown_until` in `accounts.json` |
 | Copilot `-p` asks for permission or fails | Pass `--allow-all-tools` (or the narrower `--allow-tool` flags) as you would with `copilot` |
 | Copilot accounts act as the same user | Each pool entry must be logged in as a different GitHub user (check `copilot-pool status`) |

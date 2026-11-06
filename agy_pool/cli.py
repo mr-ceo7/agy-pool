@@ -19,6 +19,12 @@ import re
 import fcntl
 import base64
 import urllib.request
+import errno
+import pty
+import select
+import signal
+import termios
+import tty
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
@@ -186,6 +192,32 @@ class AccountPool:
                 self._save_data(data)
                 return next_acc
 
+    def switch_to_next_ready(self, account_id: str) -> Optional[dict]:
+        with self.lock:
+            with self._file_lock():
+                data = self._load_data()
+                accounts = data.get("accounts", [])
+                if len(accounts) < 2:
+                    return None
+
+                now = time.time()
+                start = next((i for i, acc in enumerate(accounts) if acc.get("id") == account_id), None)
+                if start is None:
+                    return None
+
+                for offset in range(1, len(accounts)):
+                    idx = (start + offset) % len(accounts)
+                    acc = accounts[idx]
+                    cooldown = acc.get("cooldown_until")
+                    if cooldown and now >= cooldown:
+                        acc["cooldown_until"] = None
+                        acc["status"] = "ready"
+                    if not acc.get("cooldown_until") and acc.get("status") != "disabled":
+                        data["active_index"] = idx
+                        self._save_data(data)
+                        return acc
+                return None
+
     def record_success(self, account_id: str):
         with self.lock:
             with self._file_lock():
@@ -317,6 +349,127 @@ def is_quota_error(text: str, tool_id: str = "agy") -> bool:
             r"exceeded your current quota",
         ]
     return any(re.search(p, low) for p in patterns)
+
+
+def interactive_resume_args(args: List[str]) -> List[str]:
+    if any(arg in ("--continue", "-c", "--conversation") or arg.startswith("--conversation=")
+           for arg in args):
+        return list(args)
+    return list(args) + ["--continue"]
+
+
+def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optional[str]]:
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    stdin_is_tty = os.isatty(stdin_fd)
+    old_termios = termios.tcgetattr(stdin_fd) if stdin_is_tty else None
+    if stdin_is_tty:
+        tty.setraw(stdin_fd)
+
+    pid = -1
+    master_fd = -1
+    child_status = None
+    old_winch = signal.getsignal(signal.SIGWINCH)
+    try:
+        pid, master_fd = pty.fork()
+        if pid == 0:
+            try:
+                os.execvpe(command[0], command, env)
+            except OSError as exc:
+                print(f"Error launching {command[0]}: {exc}", file=sys.stderr)
+                os._exit(127)
+
+        def resize_child(_signum, _frame):
+            try:
+                winsize = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\0" * 8)
+                fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+            except OSError:
+                pass
+
+        signal.signal(signal.SIGWINCH, resize_child)
+        resize_child(signal.SIGWINCH, None)
+
+        trigger = None
+        quota_output = ""
+        stopping_child = False
+        pending_interrupt = False
+        launched_at = time.monotonic()
+        input_open = True
+        pty_eof = False
+        while child_status is None or not pty_eof:
+            read_fds = [] if pty_eof else [master_fd]
+            if child_status is None and input_open and not stopping_child:
+                read_fds.append(stdin_fd)
+            try:
+                ready, _, _ = select.select(read_fds, [], [], 0.1)
+            except InterruptedError:
+                continue
+
+            if master_fd in ready:
+                try:
+                    output = os.read(master_fd, 4096)
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        raise
+                    output = b""
+                    pty_eof = True
+                if not output:
+                    pty_eof = True
+                if output:
+                    os.write(stdout_fd, output)
+                    quota_output = (quota_output + output.decode("utf-8", errors="ignore"))[-8192:]
+                    visible_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", quota_output)
+                    if is_quota_error(visible_output) and trigger != "quota":
+                        trigger = "quota"
+                        if not stopping_child and child_status is None:
+                            try:
+                                os.killpg(pid, signal.SIGINT)
+                            except ProcessLookupError:
+                                pass
+                            stopping_child = True
+
+            if child_status is None and input_open and not stopping_child and stdin_fd in ready:
+                user_input = os.read(stdin_fd, 4096)
+                if not user_input:
+                    input_open = False
+                else:
+                    interrupt_at = user_input.find(b"\x03")
+                    if interrupt_at < 0:
+                        os.write(master_fd, user_input)
+                    else:
+                        if interrupt_at:
+                            os.write(master_fd, user_input[:interrupt_at])
+                        if trigger is None:
+                            trigger = "interrupt"
+                        if not stopping_child:
+                            stopping_child = True
+                            pending_interrupt = True
+
+            if child_status is None:
+                waited_pid, status = os.waitpid(pid, os.WNOHANG)
+                if waited_pid:
+                    child_status = status
+                elif pending_interrupt and time.monotonic() - launched_at >= 0.2:
+                    try:
+                        os.killpg(pid, signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
+                    pending_interrupt = False
+
+        return os.waitstatus_to_exitcode(child_status), trigger
+    finally:
+        signal.signal(signal.SIGWINCH, old_winch)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if pid > 0 and child_status is None:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+        if old_termios is not None:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_termios)
+
 
 def ensure_claude_symlinks(account_home: str):
     """
@@ -978,7 +1131,35 @@ Multi-CLI Support:
 
     if not is_print_mode:
         print(f"[{tool_id}-pool] Account: {account['id']} ({account.get('email')}) | Workspace: {os.getcwd()}", file=sys.stderr)
-        os.execvpe(default_bin, [default_bin] + sys.argv[1:], env)
+        if tool_id != "agy":
+            os.execvpe(default_bin, [default_bin] + sys.argv[1:], env)
+
+        command_args = list(sys.argv[1:])
+        while True:
+            returncode, trigger = run_interactive_session([default_bin] + command_args, env)
+            if trigger == "quota":
+                print(f"\n[{tool_id}-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
+                next_acc = pool.mark_quota_exhausted(account["id"], "interactive quota output")
+            elif trigger == "interrupt":
+                next_acc = pool.switch_to_next_ready(account["id"])
+            else:
+                next_acc = None
+
+            if not next_acc:
+                if trigger:
+                    print(f"[{tool_id}-pool] No other ready account is available; leaving the session stopped.", file=sys.stderr)
+                if returncode == 0:
+                    pool.record_success(account["id"])
+                sys.exit(returncode)
+
+            account = next_acc
+            ensure_account_symlinks(account["home_dir"])
+            env["HOME"] = account["home_dir"]
+            if trigger == "interrupt":
+                print(f"\n[{tool_id}-pool] Switching to '{account['id']}' and resuming the conversation...\n", file=sys.stderr)
+            else:
+                print(f"[{tool_id}-pool] Resuming with account: '{account['id']}' ({account.get('email')})...\n", file=sys.stderr)
+            command_args = interactive_resume_args(command_args)
     else:
         while True:
             proc = subprocess.Popen(
