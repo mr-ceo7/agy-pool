@@ -150,7 +150,10 @@ class AccountPool:
                 print(f"[agy-pool] Warning: All accounts are in quota cooldown. Using earliest: '{earliest['id']}'", file=sys.stderr)
                 return earliest
 
-    def mark_quota_exhausted(self, account_id: str, error_msg: str = "") -> Optional[dict]:
+    def mark_quota_exhausted(
+        self, account_id: str, error_msg: str = "", cooldown_seconds: Optional[int] = None,
+        error_id: Optional[str] = None, activate_next: bool = True,
+    ) -> Optional[dict]:
         with self.lock:
             with self._file_lock():
                 data = self._load_data()
@@ -159,23 +162,32 @@ class AccountPool:
                     return None
 
                 now = time.time()
-                cooldown_period = data.get("cooldown_seconds", self.cooldown_seconds)
+                cooldown_period = cooldown_seconds or data.get("cooldown_seconds", self.cooldown_seconds)
                 cooldown_until = now + cooldown_period
 
                 target_idx = None
                 for idx, acc in enumerate(accounts):
                     if acc.get("id") == account_id:
+                        if error_id:
+                            seen_ids = data.setdefault("seen_quota_error_ids", [])
+                            if error_id.lower() not in seen_ids:
+                                seen_ids.append(error_id.lower())
+                                data["seen_quota_error_ids"] = seen_ids[-500:]
                         acc["status"] = "quota_exhausted"
                         acc["cooldown_until"] = cooldown_until
                         acc["last_exhausted_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                         acc["fail_count"] = acc.get("fail_count", 0) + 1
                         target_idx = idx
-                        print(f"[agy-pool] Account '{account_id}' quota exhausted (cooling down for {cooldown_period // 60}m)", file=sys.stderr)
+                        if cooldown_period >= 3600:
+                            cooldown_desc = f"{cooldown_period // 3600}h {(cooldown_period % 3600) // 60}m"
+                        else:
+                            cooldown_desc = f"{cooldown_period // 60}m"
+                        print(f"[agy-pool] Account '{account_id}' quota exhausted (cooling down for {cooldown_desc})", file=sys.stderr)
                         break
 
                 total = len(accounts)
                 next_acc = None
-                if target_idx is not None:
+                if target_idx is not None and activate_next:
                     for i in range(1, total + 1):
                         cand_idx = (target_idx + i) % total
                         cand = accounts[cand_idx]
@@ -191,6 +203,28 @@ class AccountPool:
 
                 self._save_data(data)
                 return next_acc
+
+    def set_active_account(self, account_id: str) -> Optional[dict]:
+        with self.lock:
+            with self._file_lock():
+                data = self._load_data()
+                accounts = data.get("accounts", [])
+                idx = next((i for i, acc in enumerate(accounts) if acc.get("id") == account_id), None)
+                if idx is None:
+                    return None
+                data["active_index"] = idx
+                self._save_data(data)
+                return accounts[idx]
+
+    def get_seen_quota_error_ids(self) -> set:
+        with self.lock:
+            with self._file_lock():
+                data = self._load_data()
+                return {
+                    error_id.lower()
+                    for error_id in data.get("seen_quota_error_ids", [])
+                    if isinstance(error_id, str)
+                }
 
     def switch_to_next_ready(self, account_id: str) -> Optional[dict]:
         with self.lock:
@@ -342,6 +376,7 @@ def is_quota_error(text: str, tool_id: str = "agy") -> bool:
             r"429",
             r"resource_exhausted",
             r"quota.*exceeded",
+            r"quota.*reached",
             r"rate.*limit",
             r"exhausted.*quota",
             r"too many requests",
@@ -351,6 +386,31 @@ def is_quota_error(text: str, tool_id: str = "agy") -> bool:
     return any(re.search(p, low) for p in patterns)
 
 
+def quota_error_id(text: str) -> Optional[str]:
+    matches = re.findall(r"\berror\s*id\s*:\s*([a-f0-9-]+)", text, re.IGNORECASE)
+    return matches[-1].lower() if matches else None
+
+
+def quota_reset_seconds(text: str) -> Optional[int]:
+    matches = list(re.finditer(
+        r"\bresets?\s+in\s+((?:\d+\s*(?:days?|d|hours?|h|minutes?|m|seconds?|s)\s*)+)",
+        text,
+        re.IGNORECASE,
+    ))
+    if not matches:
+        return None
+
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    total = 0
+    for amount, unit in re.findall(
+        r"(\d+)\s*(days?|d|hours?|h|minutes?|m|seconds?|s)",
+        matches[-1].group(1),
+        re.IGNORECASE,
+    ):
+        total += int(amount) * units[unit[0].lower()]
+    return total or None
+
+
 def interactive_resume_args(args: List[str]) -> List[str]:
     if any(arg in ("--continue", "-c", "--conversation") or arg.startswith("--conversation=")
            for arg in args):
@@ -358,7 +418,65 @@ def interactive_resume_args(args: List[str]) -> List[str]:
     return list(args) + ["--continue"]
 
 
-def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optional[str]]:
+def probe_next_agy_account(
+    pool: AccountPool, after_account_id: str, seen_quota_ids: set, timeout: int = 90
+) -> Optional[Tuple[dict, dict]]:
+    accounts = pool.list_accounts()
+    start = next((i for i, acc in enumerate(accounts) if acc.get("id") == after_account_id), None)
+    if start is None:
+        return None
+
+    for offset in range(1, len(accounts)):
+        account = accounts[(start + offset) % len(accounts)]
+        if account.get("status") == "disabled" or account.get("cooldown_until"):
+            continue
+
+        print(f"[agy-pool] Testing account '{account['id']}' with a 'hi' prompt...", file=sys.stderr)
+        ensure_account_symlinks(account["home_dir"])
+        env = os.environ.copy()
+        env["HOME"] = account["home_dir"]
+        env["DBUS_SESSION_BUS_ADDRESS"] = "disabled"
+        env.pop("SSH_CONNECTION", None)
+        env.pop("SSH_CLIENT", None)
+        env.pop("SSH_TTY", None)
+        try:
+            result = subprocess.run(
+                ["agy", "-p", "hi"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[agy-pool] Account '{account['id']}' did not answer 'hi' within {timeout}s; skipping it.", file=sys.stderr)
+            continue
+
+        output = result.stdout + "\n" + result.stderr
+        error_id = quota_error_id(output)
+        if result.returncode == 0 and result.stdout.strip() and not is_quota_error(output):
+            active = pool.set_active_account(account["id"])
+            if active:
+                print(f"[agy-pool] Account '{account['id']}' replied; set as active.", file=sys.stderr)
+                return active, env
+        elif is_quota_error(output) and error_id not in seen_quota_ids:
+            if error_id:
+                seen_quota_ids.add(error_id)
+            pool.mark_quota_exhausted(
+                account["id"],
+                output,
+                cooldown_seconds=quota_reset_seconds(output),
+                error_id=error_id,
+                activate_next=False,
+            )
+        else:
+            print(f"[agy-pool] Account '{account['id']}' did not reply successfully; trying the next account.", file=sys.stderr)
+
+    return None
+
+
+def run_interactive_session(
+    command: List[str], env: dict, ignored_quota_ids: Optional[set] = None
+) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
     stdin_fd = sys.stdin.fileno()
     stdout_fd = sys.stdout.fileno()
     stdin_is_tty = os.isatty(stdin_fd)
@@ -390,7 +508,12 @@ def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optiona
         resize_child(signal.SIGWINCH, None)
 
         trigger = None
+        detected_quota_id = None
+        detected_cooldown = None
+        ignored_quota_ids = ignored_quota_ids or set()
         quota_output = ""
+        quota_candidate_since = None
+        quota_detection_armed = False
         stopping_child = False
         pending_interrupt = False
         launched_at = time.monotonic()
@@ -404,6 +527,31 @@ def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optiona
                 ready, _, _ = select.select(read_fds, [], [], 0.1)
             except InterruptedError:
                 continue
+
+            if child_status is None and input_open and not stopping_child and stdin_fd in ready:
+                user_input = os.read(stdin_fd, 4096)
+                if not user_input:
+                    input_open = False
+                else:
+                    interrupt_at = user_input.find(b"\x03")
+                    if interrupt_at < 0:
+                        os.write(master_fd, user_input)
+                        if b"\n" in user_input or b"\r" in user_input:
+                            quota_detection_armed = True
+                            quota_output = ""
+                            quota_candidate_since = None
+                    else:
+                        if interrupt_at:
+                            os.write(master_fd, user_input[:interrupt_at])
+                            if b"\n" in user_input[:interrupt_at] or b"\r" in user_input[:interrupt_at]:
+                                quota_detection_armed = True
+                                quota_output = ""
+                                quota_candidate_since = None
+                        if trigger is None:
+                            trigger = "interrupt"
+                        if not stopping_child:
+                            stopping_child = True
+                            pending_interrupt = True
 
             if master_fd in ready:
                 try:
@@ -419,31 +567,32 @@ def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optiona
                     os.write(stdout_fd, output)
                     quota_output = (quota_output + output.decode("utf-8", errors="ignore"))[-8192:]
                     visible_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", quota_output)
-                    if is_quota_error(visible_output) and trigger != "quota":
-                        trigger = "quota"
-                        if not stopping_child and child_status is None:
-                            try:
-                                os.killpg(pid, signal.SIGINT)
-                            except ProcessLookupError:
-                                pass
-                            stopping_child = True
+                    visible_error_id = quota_error_id(visible_output)
+                    if (is_quota_error(visible_output) and visible_error_id in ignored_quota_ids):
+                        quota_output = ""
+                        quota_candidate_since = None
+                    elif (quota_detection_armed and is_quota_error(visible_output)
+                            and quota_candidate_since is None):
+                        quota_candidate_since = time.monotonic()
 
-            if child_status is None and input_open and not stopping_child and stdin_fd in ready:
-                user_input = os.read(stdin_fd, 4096)
-                if not user_input:
-                    input_open = False
-                else:
-                    interrupt_at = user_input.find(b"\x03")
-                    if interrupt_at < 0:
-                        os.write(master_fd, user_input)
-                    else:
-                        if interrupt_at:
-                            os.write(master_fd, user_input[:interrupt_at])
-                        if trigger is None:
-                            trigger = "interrupt"
-                        if not stopping_child:
-                            stopping_child = True
-                            pending_interrupt = True
+            if trigger is None and quota_candidate_since is not None:
+                visible_error_id = quota_error_id(quota_output)
+                has_error_id_label = re.search(r"\berror\s*id\s*:", quota_output, re.IGNORECASE)
+                if visible_error_id in ignored_quota_ids:
+                    quota_output = ""
+                    quota_candidate_since = None
+                elif visible_error_id or (
+                    not has_error_id_label and time.monotonic() - quota_candidate_since >= 1
+                ):
+                    trigger = "quota"
+                    detected_quota_id = visible_error_id
+                    detected_cooldown = quota_reset_seconds(quota_output)
+                    if not stopping_child and child_status is None:
+                        try:
+                            os.killpg(pid, signal.SIGINT)
+                        except ProcessLookupError:
+                            pass
+                        stopping_child = True
 
             if child_status is None:
                 waited_pid, status = os.waitpid(pid, os.WNOHANG)
@@ -456,7 +605,7 @@ def run_interactive_session(command: List[str], env: dict) -> Tuple[int, Optiona
                         pass
                     pending_interrupt = False
 
-        return os.waitstatus_to_exitcode(child_status), trigger
+        return os.waitstatus_to_exitcode(child_status), trigger, detected_quota_id, detected_cooldown
     finally:
         signal.signal(signal.SIGWINCH, old_winch)
         if master_fd >= 0:
@@ -1135,30 +1284,30 @@ Multi-CLI Support:
             os.execvpe(default_bin, [default_bin] + sys.argv[1:], env)
 
         command_args = list(sys.argv[1:])
+        seen_quota_ids = pool.get_seen_quota_error_ids()
         while True:
-            returncode, trigger = run_interactive_session([default_bin] + command_args, env)
+            returncode, trigger, error_id, cooldown = run_interactive_session(
+                [default_bin] + command_args, env, ignored_quota_ids=seen_quota_ids
+            )
             if trigger == "quota":
                 print(f"\n[{tool_id}-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
-                next_acc = pool.mark_quota_exhausted(account["id"], "interactive quota output")
-            elif trigger == "interrupt":
-                next_acc = pool.switch_to_next_ready(account["id"])
-            else:
-                next_acc = None
+                if error_id:
+                    seen_quota_ids.add(error_id)
+                pool.mark_quota_exhausted(
+                    account["id"], "interactive quota output", cooldown_seconds=cooldown,
+                    error_id=error_id, activate_next=False,
+                )
 
-            if not next_acc:
-                if trigger:
-                    print(f"[{tool_id}-pool] No other ready account is available; leaving the session stopped.", file=sys.stderr)
-                if returncode == 0:
-                    pool.record_success(account["id"])
+            next_account = probe_next_agy_account(pool, account["id"], seen_quota_ids)
+            if not next_account:
+                print("[agy-pool] No other account replied to the test prompt; leaving the session stopped.", file=sys.stderr)
                 sys.exit(returncode)
 
-            account = next_acc
-            ensure_account_symlinks(account["home_dir"])
-            env["HOME"] = account["home_dir"]
+            account, env = next_account
             if trigger == "interrupt":
-                print(f"\n[{tool_id}-pool] Switching to '{account['id']}' and resuming the conversation...\n", file=sys.stderr)
+                print(f"\n[{tool_id}-pool] Resuming the conversation with verified account '{account['id']}'...\n", file=sys.stderr)
             else:
-                print(f"[{tool_id}-pool] Resuming with account: '{account['id']}' ({account.get('email')})...\n", file=sys.stderr)
+                print(f"[{tool_id}-pool] Resuming with verified account: '{account['id']}' ({account.get('email')})...\n", file=sys.stderr)
             command_args = interactive_resume_args(command_args)
     else:
         while True:
@@ -1174,7 +1323,9 @@ Multi-CLI Support:
 
             if proc.returncode != 0 and is_quota_error(stderr, tool_id):
                 print(f"\n[{tool_id}-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
-                next_acc = pool.mark_quota_exhausted(account["id"], stderr)
+                next_acc = pool.mark_quota_exhausted(
+                    account["id"], stderr, error_id=quota_error_id(stderr)
+                )
                 if next_acc and next_acc["id"] != account["id"]:
                     account = next_acc
                     if tool_id == "claude":
