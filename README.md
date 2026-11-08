@@ -64,6 +64,7 @@ Then use `agy-pool` wherever you'd use `agy`. All arguments pass straight throug
 
 ```sh
 agy-pool                                         # interactive session on the active account
+agy-pool --auto-rotate                           # opt in to interactive quota-triggered rotation
 agy-pool -p "Audit and refactor the auth routes" # one-shot prompt, with automatic failover
 agy-pool -c                                      # any agy flag works
 ```
@@ -77,12 +78,14 @@ The same commands work as `claude-pool …`, `copilot-pool …`, or `agy-pool cl
 | Command | What it does |
 |---|---|
 | `agy-pool [agy args]` | Run the CLI as the active account. Without `-p` it opens the interactive session |
+| `agy-pool --auto-rotate [agy args]` | Enable automatic quota-triggered rotation in interactive agy sessions (off by default); Ctrl+C switching remains available |
 | `agy-pool -p "<prompt>"` | Run a prompt; on a quota error, switch account and retry (also `--print`, `--prompt`) |
 | `agy-pool import [name]` | Add the account the CLI is currently logged into (default name `primary`) |
 | `agy-pool import-keyring [name]` | agy only: import the token stored in the desktop keyring (`secret-tool`) |
 | `agy-pool add <name>` | Log in to a new account and add it |
 | `agy-pool status` | List accounts, the active one, cooldowns and request counts (also `list`) |
 | `agy-pool switch [name]` | Make `name` active, or move to the next account |
+| `agy-pool --reset-cooldowns` | Clear cooldowns and mark all accounts ready |
 | `agy-pool test [name]` | Send a short test prompt with each account (or just `name`) and report the result (also `probe`) |
 | `agy-pool remove <name>` | Remove an account **and delete its folder, including its login** (also `rm`, `delete`) |
 | `agy-pool update [--check]` | Check for and install a newer version (also `upgrade`) |
@@ -94,8 +97,8 @@ The same commands work as `claude-pool …`, `copilot-pool …`, or `agy-pool cl
 - **Spotting a quota error.** In `-p` / `--print` / `--prompt` mode, agy-pool checks captured error output. In interactive agy mode, it monitors terminal output for quota messages:
   - Claude: `429`, `rate_limit`, `usage_limit_reached`, `weekly limit`, `5-hour limit`, "limit … resets", `out_of_credits`, `overloaded_error`.
   - agy and Copilot: `429`, `RESOURCE_EXHAUSTED`, "quota exceeded", "rate limit", "too many requests", and similar.
-- **Retrying.** On a quota error in print mode, the account cools down for the configured duration (60 minutes by default) and the same command runs again on the next ready account. In interactive agy mode, agy-pool watches for quota errors after a prompt is submitted, ignores startup transcript output and quota error IDs saved from earlier runs, and uses the reset duration in the quota message when available. Before switching and resuming, it tests each ready account with `agy -p "hi"`; only an account that replies successfully becomes active.
-- **Interactive sessions** monitor agy's terminal output for quota errors. On a match, agy-pool interrupts the current process, marks that account cooling down, switches accounts, and resumes the shared conversation with `--continue`. Pressing Ctrl+C also switches to the next ready account and resumes; use agy's normal exit action (such as Ctrl+D) to leave without switching.
+- **Retrying.** On a quota error in print mode, the account cools down for the configured duration (60 minutes by default) and the same command runs again on the next ready account. Interactive quota-triggered rotation is off by default; enable it with `agy-pool --auto-rotate`. When enabled, only a new quota error after an ordinary, non-empty prompt is submitted triggers rotation; slash commands such as `/resume` and replayed transcript messages are ignored. When available, the quota message's reset duration determines the cooldown. Before switching and resuming, agy-pool tests each ready account non-interactively with `agy --print "hi"` and activates only one that replies successfully.
+- **Interactive sessions** monitor agy's terminal output for quota errors only with `--auto-rotate`. On a match, agy-pool interrupts the current process, marks that account cooling down, switches accounts, and resumes the same conversation interactively using the conversation ID printed by agy when available. Pressing Ctrl+C still switches to the next ready account and resumes; use agy's normal exit action (such as Ctrl+D) to leave without switching.
 - **Output.** Print-mode answers stream to your terminal as usual; interactive agy sessions relay the terminal directly.
 - **Changing the cooldown.** The length is `cooldown_seconds` in the pool's `accounts.json` (default `3600`).
 

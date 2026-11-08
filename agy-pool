@@ -226,6 +226,17 @@ class AccountPool:
                     if isinstance(error_id, str)
                 }
 
+    def reset_cooldowns(self) -> int:
+        with self.lock:
+            with self._file_lock():
+                data = self._load_data()
+                accounts = data.get("accounts", [])
+                for account in accounts:
+                    account["status"] = "ready"
+                    account["cooldown_until"] = None
+                self._save_data(data)
+                return len(accounts)
+
     def switch_to_next_ready(self, account_id: str) -> Optional[dict]:
         with self.lock:
             with self._file_lock():
@@ -391,6 +402,14 @@ def quota_error_id(text: str) -> Optional[str]:
     return matches[-1].lower() if matches else None
 
 
+def prompt_input_is_nonempty(text: bytes) -> bool:
+    if b"\x1b" in text:
+        return False
+    text = re.sub(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[ -~]|[@-_])", b"", text)
+    clean = re.sub(rb"[\x00-\x20\x7f]", b"", text).decode("utf-8", errors="ignore")
+    return bool(clean) and not clean.startswith("/")
+
+
 def quota_reset_seconds(text: str) -> Optional[int]:
     matches = list(re.finditer(
         r"\bresets?\s+in\s+((?:\d+\s*(?:days?|d|hours?|h|minutes?|m|seconds?|s)\s*)+)",
@@ -411,11 +430,23 @@ def quota_reset_seconds(text: str) -> Optional[int]:
     return total or None
 
 
-def interactive_resume_args(args: List[str]) -> List[str]:
+def interactive_resume_args(args: List[str], conversation_id: Optional[str] = None) -> List[str]:
     if any(arg in ("--continue", "-c", "--conversation") or arg.startswith("--conversation=")
            for arg in args):
         return list(args)
+    if conversation_id:
+        return list(args) + ["--conversation", conversation_id]
     return list(args) + ["--continue"]
+
+
+def conversation_id_from_output(text: str) -> Optional[str]:
+    visible = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    matches = re.findall(
+        r"\bResume with -c\b[\s\S]{0,512}?\s--conversation(?:=|\s+)([A-Za-z0-9_-]+)",
+        visible,
+        re.IGNORECASE,
+    )
+    return matches[-1] if matches else None
 
 
 def probe_next_agy_account(
@@ -441,8 +472,9 @@ def probe_next_agy_account(
         env.pop("SSH_TTY", None)
         try:
             result = subprocess.run(
-                ["agy", "-p", "hi"],
+                ["agy", "--print", "hi"],
                 env=env,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -475,8 +507,8 @@ def probe_next_agy_account(
 
 
 def run_interactive_session(
-    command: List[str], env: dict, ignored_quota_ids: Optional[set] = None
-) -> Tuple[int, Optional[str], Optional[str], Optional[int]]:
+    command: List[str], env: dict, auto_rotate: bool = False
+) -> Tuple[int, Optional[str], Optional[str], Optional[int], Optional[str]]:
     stdin_fd = sys.stdin.fileno()
     stdout_fd = sys.stdout.fileno()
     stdin_is_tty = os.isatty(stdin_fd)
@@ -510,10 +542,12 @@ def run_interactive_session(
         trigger = None
         detected_quota_id = None
         detected_cooldown = None
-        ignored_quota_ids = ignored_quota_ids or set()
         quota_output = ""
+        session_output = ""
         quota_candidate_since = None
+        quota_candidate_signature = None
         quota_detection_armed = False
+        prompt_input = bytearray()
         stopping_child = False
         pending_interrupt = False
         launched_at = time.monotonic()
@@ -528,31 +562,6 @@ def run_interactive_session(
             except InterruptedError:
                 continue
 
-            if child_status is None and input_open and not stopping_child and stdin_fd in ready:
-                user_input = os.read(stdin_fd, 4096)
-                if not user_input:
-                    input_open = False
-                else:
-                    interrupt_at = user_input.find(b"\x03")
-                    if interrupt_at < 0:
-                        os.write(master_fd, user_input)
-                        if b"\n" in user_input or b"\r" in user_input:
-                            quota_detection_armed = True
-                            quota_output = ""
-                            quota_candidate_since = None
-                    else:
-                        if interrupt_at:
-                            os.write(master_fd, user_input[:interrupt_at])
-                            if b"\n" in user_input[:interrupt_at] or b"\r" in user_input[:interrupt_at]:
-                                quota_detection_armed = True
-                                quota_output = ""
-                                quota_candidate_since = None
-                        if trigger is None:
-                            trigger = "interrupt"
-                        if not stopping_child:
-                            stopping_child = True
-                            pending_interrupt = True
-
             if master_fd in ready:
                 try:
                     output = os.read(master_fd, 4096)
@@ -565,27 +574,58 @@ def run_interactive_session(
                     pty_eof = True
                 if output:
                     os.write(stdout_fd, output)
-                    quota_output = (quota_output + output.decode("utf-8", errors="ignore"))[-8192:]
+                    decoded_output = output.decode("utf-8", errors="ignore")
+                    session_output = (session_output + decoded_output)[-32768:]
+                    quota_output = (quota_output + decoded_output)[-8192:]
                     visible_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", quota_output)
-                    visible_error_id = quota_error_id(visible_output)
-                    if (is_quota_error(visible_output) and visible_error_id in ignored_quota_ids):
-                        quota_output = ""
-                        quota_candidate_since = None
-                    elif (quota_detection_armed and is_quota_error(visible_output)
-                            and quota_candidate_since is None):
-                        quota_candidate_since = time.monotonic()
+                    if (quota_detection_armed and is_quota_error(visible_output)
+                            and (quota_candidate_since is None or (
+                                quota_candidate_signature
+                                and not quota_candidate_signature.startswith("id:")
+                            ))):
+                        visible_error_id = quota_error_id(visible_output)
+                        quota_candidate_signature = (
+                            "id:" + visible_error_id if visible_error_id else "text"
+                        )
+                        if quota_candidate_since is None:
+                            quota_candidate_since = time.monotonic()
+
+            if child_status is None and input_open and not stopping_child and stdin_fd in ready:
+                user_input = os.read(stdin_fd, 4096)
+                if not user_input:
+                    input_open = False
+                else:
+                    interrupt_at = user_input.find(b"\x03")
+                    forwarded_input = user_input if interrupt_at < 0 else user_input[:interrupt_at]
+                    if forwarded_input:
+                        os.write(master_fd, forwarded_input)
+                    for byte in forwarded_input:
+                        if byte in (10, 13):
+                            if auto_rotate and prompt_input_is_nonempty(bytes(prompt_input)):
+                                quota_detection_armed = True
+                                quota_output = ""
+                                quota_candidate_since = None
+                                quota_candidate_signature = None
+                            prompt_input.clear()
+                        elif byte in (8, 127):
+                            if prompt_input:
+                                prompt_input.pop()
+                        else:
+                            prompt_input.append(byte)
+                    if interrupt_at >= 0:
+                        if trigger is None:
+                            trigger = "interrupt"
+                        if not stopping_child:
+                            stopping_child = True
+                            pending_interrupt = True
 
             if trigger is None and quota_candidate_since is not None:
-                visible_error_id = quota_error_id(quota_output)
-                has_error_id_label = re.search(r"\berror\s*id\s*:", quota_output, re.IGNORECASE)
-                if visible_error_id in ignored_quota_ids:
-                    quota_output = ""
-                    quota_candidate_since = None
-                elif visible_error_id or (
-                    not has_error_id_label and time.monotonic() - quota_candidate_since >= 1
-                ):
+                visible_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", quota_output)
+                visible_error_id = quota_error_id(visible_output)
+                candidate_is_id = quota_candidate_signature.startswith("id:")
+                if candidate_is_id or time.monotonic() - quota_candidate_since >= 1:
                     trigger = "quota"
-                    detected_quota_id = visible_error_id
+                    detected_quota_id = visible_error_id if candidate_is_id else None
                     detected_cooldown = quota_reset_seconds(quota_output)
                     if not stopping_child and child_status is None:
                         try:
@@ -605,7 +645,13 @@ def run_interactive_session(
                         pass
                     pending_interrupt = False
 
-        return os.waitstatus_to_exitcode(child_status), trigger, detected_quota_id, detected_cooldown
+        return (
+            os.waitstatus_to_exitcode(child_status),
+            trigger,
+            detected_quota_id,
+            detected_cooldown,
+            conversation_id_from_output(session_output),
+        )
     finally:
         signal.signal(signal.SIGWINCH, old_winch)
         if master_fd >= 0:
@@ -1170,6 +1216,10 @@ def main():
             tool_id = "agy"
         sys.argv.pop(1)
 
+    auto_rotate = tool_id == "agy" and "--auto-rotate" in sys.argv[1:]
+    if auto_rotate:
+        sys.argv = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != "--auto-rotate"]
+
     if tool_id == "claude":
         pool_base = os.path.expanduser("~/.claude_accounts")
         tool_name = "Claude"
@@ -1196,6 +1246,10 @@ def main():
             return
         elif sub in ("switch", "pool-switch"):
             cmd_switch(pool, sys.argv[2:])
+            return
+        elif sub in ("--reset-cooldowns", "--clear-cooldowns"):
+            count = pool.reset_cooldowns()
+            print(f"✓ Reset cooldowns; {count} account(s) marked ready.")
             return
         elif sub in ("add", "pool-add"):
             if tool_id == "claude":
@@ -1236,11 +1290,13 @@ def main():
             print(f"""
 Commands ({tool_name} mode):
   {invoked_name}                         Launch interactive session with active account
+  {invoked_name} --auto-rotate           Enable automatic interactive quota rotation (off by default)
   {invoked_name} -p "prompt"             Run prompt with automatic quota failover & retry
   {invoked_name} add <name>              Authenticate and add a new account
   {invoked_name} import [name]           Import current active local credentials into pool
   {invoked_name} status                  Show registered accounts and quota cooldowns
   {invoked_name} switch [name]           Switch active account
+  {invoked_name} --reset-cooldowns       Clear cooldowns and mark all accounts ready
   {invoked_name} test [name]             Probe accounts with a test prompt
   {invoked_name} update [--check]        Check for updates or update to the latest version
   {invoked_name} remove <name>           Remove an account from the pool
@@ -1286,9 +1342,11 @@ Multi-CLI Support:
         command_args = list(sys.argv[1:])
         seen_quota_ids = pool.get_seen_quota_error_ids()
         while True:
-            returncode, trigger, error_id, cooldown = run_interactive_session(
-                [default_bin] + command_args, env, ignored_quota_ids=seen_quota_ids
+            returncode, trigger, error_id, cooldown, conversation_id = run_interactive_session(
+                [default_bin] + command_args, env, auto_rotate=auto_rotate
             )
+            if trigger not in ("quota", "interrupt"):
+                sys.exit(returncode)
             if trigger == "quota":
                 print(f"\n[{tool_id}-pool] Quota limit hit on '{account['id']}'. Rolling over to next account...", file=sys.stderr)
                 if error_id:
@@ -1308,7 +1366,7 @@ Multi-CLI Support:
                 print(f"\n[{tool_id}-pool] Resuming the conversation with verified account '{account['id']}'...\n", file=sys.stderr)
             else:
                 print(f"[{tool_id}-pool] Resuming with verified account: '{account['id']}' ({account.get('email')})...\n", file=sys.stderr)
-            command_args = interactive_resume_args(command_args)
+            command_args = interactive_resume_args(command_args, conversation_id)
     else:
         while True:
             proc = subprocess.Popen(

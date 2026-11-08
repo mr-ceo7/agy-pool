@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import sys
+import time
 
 import pytest
 
@@ -86,6 +87,23 @@ def test_quota_error_ids_persist_between_pool_instances(tmp_path):
     assert restarted_pool.get_seen_quota_error_ids() == {error_id}
 
 
+def test_reset_cooldowns_marks_all_accounts_ready(tmp_path):
+    pool = cli.AccountPool(base_dir=str(tmp_path / "pool"))
+    for name in ("a", "b"):
+        pool.add_account_from_dir(name, str(tmp_path), tool_type="claude")
+    pool.mark_quota_exhausted("a", "quota", cooldown_seconds=3600, activate_next=False)
+    data = pool._load_data()
+    data["accounts"][1]["status"] = "disabled"
+    data["accounts"][1]["cooldown_until"] = cli.time.time() + 3600
+    pool._save_data(data)
+
+    assert pool.reset_cooldowns() == 2
+    assert all(
+        account["status"] == "ready" and account["cooldown_until"] is None
+        for account in pool.list_accounts()
+    )
+
+
 def test_failover_rolls_to_next_ready_account(tmp_path):
     pool = cli.AccountPool(base_dir=str(tmp_path / "pool"))
     for name in ("a", "b"):
@@ -115,6 +133,10 @@ def test_failover_probes_accounts_before_activating_them(tmp_path, monkeypatch):
     fake_agy = fake_bin / "agy"
     fake_agy.write_text(
         "#!/bin/sh\n"
+        "[ \"$1\" = \"--print\" ] || exit 2\n"
+        "[ \"$2\" = \"hi\" ] || exit 2\n"
+        "[ ! -t 0 ] || exit 2\n"
+        "if read -r line; then exit 2; fi\n"
         "case \"$HOME\" in\n"
         "  */no_reply) exit 1 ;;\n"
         "  */working) echo hi ;;\n"
@@ -136,9 +158,45 @@ def test_interactive_resume_args_preserve_explicit_conversation():
     assert cli.interactive_resume_args(["--model", "test"]) == ["--model", "test", "--continue"]
     assert cli.interactive_resume_args(["--conversation", "abc"]) == ["--conversation", "abc"]
     assert cli.interactive_resume_args(["-c"]) == ["-c"]
+    assert cli.interactive_resume_args([], "abc") == ["--conversation", "abc"]
+    assert cli.interactive_resume_args(["--model", "test"], "abc") == [
+        "--model", "test", "--conversation", "abc"
+    ]
+
+
+def test_conversation_id_from_resume_hint():
+    output = "Resume with -c (or command below):\r\nagy --conversation=abc-123\r\n"
+    assert cli.conversation_id_from_output(output) == "abc-123"
+    assert cli.conversation_id_from_output("unrelated --conversation=abc-123") is None
 
 
 def test_interactive_session_detects_quota_output(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"hi\n")
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [sys.executable, "-c", "import time; print('Error 429: RESOURCE_EXHAUSTED', flush=True); time.sleep(30)"],
+            os.environ.copy(),
+            auto_rotate=True,
+        )
+        output.flush()
+        assert trigger == "quota"
+        assert code == -signal.SIGINT
+        assert error_id is None
+        assert cooldown is None
+        assert conversation_id is None
+        assert b"RESOURCE_EXHAUSTED" in (tmp_path / "terminal-output").read_bytes()
+    finally:
+        stdin.close()
+        output.close()
+
+
+def test_interactive_session_does_not_arm_on_empty_enter(tmp_path, monkeypatch):
     read_fd, write_fd = os.pipe()
     os.write(write_fd, b"\n")
     os.close(write_fd)
@@ -147,16 +205,48 @@ def test_interactive_session_detects_quota_output(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.sys, "stdin", stdin)
     monkeypatch.setattr(cli.sys, "stdout", output)
     try:
-        code, trigger, error_id, cooldown = cli.run_interactive_session(
-            [sys.executable, "-c", "import time; print('Error 429: RESOURCE_EXHAUSTED', flush=True); time.sleep(30)"],
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdin.readline(); "
+                "print('Individual quota reached. Resets in 2h.', flush=True)",
+            ],
             os.environ.copy(),
         )
-        output.flush()
-        assert trigger == "quota"
-        assert code == -signal.SIGINT
+        assert code == 0
+        assert trigger is None
         assert error_id is None
         assert cooldown is None
-        assert b"RESOURCE_EXHAUSTED" in (tmp_path / "terminal-output").read_bytes()
+        assert conversation_id is None
+    finally:
+        stdin.close()
+        output.close()
+
+
+def test_interactive_session_auto_rotation_is_off_by_default(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"hello\n")
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdin.readline(); "
+                "print('Individual quota reached. Resets in 2h.', flush=True)",
+            ],
+            os.environ.copy(),
+        )
+        assert code == 0
+        assert trigger is None
+        assert error_id is None
+        assert cooldown is None
+        assert conversation_id is None
     finally:
         stdin.close()
         output.close()
@@ -168,7 +258,7 @@ def test_interactive_session_ignores_startup_quota_transcript(tmp_path, monkeypa
     monkeypatch.setattr(cli.sys, "stdin", stdin)
     monkeypatch.setattr(cli.sys, "stdout", output)
     try:
-        code, trigger, error_id, cooldown = cli.run_interactive_session(
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
             [
                 sys.executable,
                 "-c",
@@ -181,19 +271,109 @@ def test_interactive_session_ignores_startup_quota_transcript(tmp_path, monkeypa
         assert trigger is None
         assert error_id is None
         assert cooldown is None
+        assert conversation_id is None
     finally:
         stdin.close()
         output.close()
 
 
-def test_interactive_session_ignores_replayed_quota_error(tmp_path, monkeypatch):
+def test_interactive_session_ignores_quota_loaded_by_resume_command(tmp_path, monkeypatch):
+    old_error = "Individual quota reached. Please upgrade your subscription. Resets in 2h."
+    read_fd, write_fd = os.pipe()
+    writer_pid = os.fork()
+    if writer_pid == 0:
+        os.close(read_fd)
+        time.sleep(0.3)
+        os.write(write_fd, b"/resume\n")
+        time.sleep(0.3)
+        os.write(write_fd, b"\x1bOA\x1bOB\n")
+        os.close(write_fd)
+        os._exit(0)
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdin.readline(); sys.stdin.readline(); "
+                f"print({old_error!r}, flush=True)",
+            ],
+            os.environ.copy(),
+        )
+        assert code == 0
+        assert trigger is None
+        assert error_id is None
+        assert cooldown is None
+        assert conversation_id is None
+    finally:
+        os.waitpid(writer_pid, 0)
+        stdin.close()
+        output.close()
+
+
+def test_prompt_input_is_nonempty_ignores_terminal_navigation_keys():
+    assert not cli.prompt_input_is_nonempty(b"\x1b[A\x1b[B")
+    assert not cli.prompt_input_is_nonempty(b"\x1bOA\x1bOB")
+    assert not cli.prompt_input_is_nonempty(b"\x1b[1;5A\x1b[1;5B")
+    assert cli.prompt_input_is_nonempty(b"hello")
+    assert not cli.prompt_input_is_nonempty(b"/resume")
+
+
+def test_interactive_session_detects_new_quota_after_fresh_prompt(tmp_path, monkeypatch):
+    old_error = "Individual quota reached. Resets in 2h. Error ID: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    new_error = old_error
+    read_fd, write_fd = os.pipe()
+    writer_pid = os.fork()
+    if writer_pid == 0:
+        os.close(read_fd)
+        time.sleep(0.3)
+        os.write(write_fd, b"/resume\n")
+        time.sleep(0.3)
+        os.write(write_fd, b"hi\n")
+        os.close(write_fd)
+        os._exit(0)
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd, "rb")
+    output = open(tmp_path / "terminal-output", "wb")
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    try:
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdin.readline(); "
+                f"print({old_error!r}, flush=True); "
+                "sys.stdin.readline(); "
+                f"print({new_error!r}, flush=True); "
+                "import time; time.sleep(30)",
+            ],
+            os.environ.copy(),
+            auto_rotate=True,
+        )
+        assert trigger == "quota"
+        assert code == -signal.SIGINT
+        assert error_id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        assert cooldown == 2 * 3600
+        assert conversation_id is None
+    finally:
+        os.waitpid(writer_pid, 0)
+        stdin.close()
+        output.close()
+
+
+def test_interactive_session_ignores_quota_without_fresh_prompt(tmp_path, monkeypatch):
     stdin = open(os.devnull, "rb")
     output = open(tmp_path / "terminal-output", "wb")
     monkeypatch.setattr(cli.sys, "stdin", stdin)
     monkeypatch.setattr(cli.sys, "stdout", output)
     error_id = "5b31dcbd-82cc-4d6f-8cef-bc1034e57a1d"
     try:
-        code, trigger, detected_id, cooldown = cli.run_interactive_session(
+        code, trigger, detected_id, cooldown, conversation_id = cli.run_interactive_session(
             [
                 sys.executable,
                 "-c",
@@ -203,12 +383,12 @@ def test_interactive_session_ignores_replayed_quota_error(tmp_path, monkeypatch)
                 f"print('Error ID: {error_id}', flush=True)",
             ],
             os.environ.copy(),
-            ignored_quota_ids={error_id},
         )
         assert code == 0
         assert trigger is None
         assert detected_id is None
         assert cooldown is None
+        assert conversation_id is None
     finally:
         stdin.close()
         output.close()
@@ -223,14 +403,23 @@ def test_interactive_session_ctrl_c_requests_rotation(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.sys, "stdin", stdin)
     monkeypatch.setattr(cli.sys, "stdout", output)
     try:
-        code, trigger, error_id, cooldown = cli.run_interactive_session(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
+            [
+                sys.executable,
+                "-c",
+                "import signal, sys, time; "
+                "signal.signal(signal.SIGINT, lambda *_: ("
+                "print('Resume with -c (or command below):\\nagy --conversation=abc-123', flush=True), "
+                "sys.exit(130))); "
+                "time.sleep(30)",
+            ],
             os.environ.copy(),
         )
         assert trigger == "interrupt"
         assert code == -signal.SIGINT
         assert error_id is None
         assert cooldown is None
+        assert conversation_id == "abc-123"
     finally:
         stdin.close()
         output.close()
@@ -242,7 +431,7 @@ def test_interactive_session_drains_output_after_process_exit(tmp_path, monkeypa
     monkeypatch.setattr(cli.sys, "stdin", stdin)
     monkeypatch.setattr(cli.sys, "stdout", output)
     try:
-        code, trigger, error_id, cooldown = cli.run_interactive_session(
+        code, trigger, error_id, cooldown, conversation_id = cli.run_interactive_session(
             [sys.executable, "-c", "print('x' * 12000, end='', flush=True)"],
             os.environ.copy(),
         )
@@ -251,6 +440,7 @@ def test_interactive_session_drains_output_after_process_exit(tmp_path, monkeypa
         assert trigger is None
         assert error_id is None
         assert cooldown is None
+        assert conversation_id is None
         assert (tmp_path / "terminal-output").read_bytes() == b"x" * 12000
     finally:
         stdin.close()
